@@ -1,7 +1,7 @@
-name: 1A.SBOM FULL
+# Demo workflow: dynamic SBOM generation with parallel chunks
+name: SBOM Demo - Applications
 
 on:
-  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -29,27 +29,63 @@ jobs:
           root = Path(".")
           entries = []
 
-          def artifact_name(path: str) -> str:
-              return path.replace("/", "__") if path != "." else "root"
+          GROUP_SIZE = 10
+
+          def artifact_name(label: str) -> str:
+              return (label.replace("/", "__")
+                          .replace(" ", "_")
+                          .replace(".", "_"))
 
           # Root files
           entries.append({
               "name": "root",
               "path": ".",
+              "paths": ["."],
               "mode": "root",
               "artifact": "root",
           })
 
-          for first in sorted([p for p in root.iterdir() if p.is_dir()]):
+          SKIP_DIRS = {'.git'}
+
+          for first in sorted(p for p in root.iterdir() if p.is_dir() and p.name not in SKIP_DIRS):
               rel_first = first.name
               entries.append({
                   "name": rel_first,
                   "path": rel_first,
+                  "paths": [rel_first],
                   "mode": "top",
-                  "artifact": artifact_name(rel_first),
+                  "artifact": artifact_name(f"top__{rel_first}"),
               })
-              for second in sorted([p for p in first.iterdir() if p.is_dir()]):
-                  rel_second = str(second.relative_to(root))
+
+              second_dirs = sorted([p for p in first.iterdir() if p.is_dir()])
+              if len(second_dirs) <= GROUP_SIZE:
+                  for second in second_dirs:
+                      rel_second = str(second.relative_to(root))
+                      entries.append({
+                          "name": rel_second,
+                          "path": rel_second,
+                          "paths": [rel_second],
+                          "mode": "sub",
+                          "artifact": artifact_name(f"sub__{rel_second}"),
+                      })
+              else:
+                  for idx in range(0, len(second_dirs), GROUP_SIZE):
+                      chunk = second_dirs[idx:idx + GROUP_SIZE]
+                      rel_paths = [str(p.relative_to(root)) for p in chunk]
+                      entries.append({
+                          "name": f"{rel_first} group {idx // GROUP_SIZE + 1}",
+                          "path": rel_first,
+                          "paths": rel_paths,
+                          "mode": "group",
+                          "artifact": artifact_name(f"group__{rel_first}__{idx // GROUP_SIZE + 1}"),
+                      })
+
+          matrix = {"chunk": entries}
+          print(json.dumps(matrix))
+          PY
+          )
+          echo "matrix=$matrix_json" >> "$GITHUB_OUTPUT"
+
                   entries.append({
                       "name": rel_second,
                       "path": rel_second,
@@ -97,24 +133,52 @@ jobs:
       - name: Prepare input list
         id: prepare
         working-directory: nrf
+        env:
+          CHUNK_JSON: ${{ toJSON(matrix.chunk) }}
         run: |
-          mkdir -p sbom/chunks
-          listfile="sbom/chunks/${{ matrix.chunk.artifact }}.lst"
-          mode="${{ matrix.chunk.mode }}"
-          path="${{ matrix.chunk.path }}"
-          if [ "$mode" = "root" ]; then
-            find . -maxdepth 1 -type f -print | sed 's|^\./||' > "$listfile"
-          elif [ "$mode" = "top" ]; then
-            find "$path" -maxdepth 1 -type f -print > "$listfile"
-          else
-            find "$path" -type f -print > "$listfile"
-          fi
-          if [ -s "$listfile" ]; then
-            echo "empty=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "empty=true" >> "$GITHUB_OUTPUT"
-          fi
-          echo "listfile=$listfile" >> "$GITHUB_OUTPUT"
+          python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          chunk = json.loads(os.environ["CHUNK_JSON"])
+          mode = chunk["mode"]
+          paths = chunk.get("paths", [])
+
+          chunk_dir = Path("sbom/chunks")
+          chunk_dir.mkdir(parents=True, exist_ok=True)
+          listfile = chunk_dir / f"{chunk['artifact']}.lst"
+
+          files = set()
+
+          def add_file(path: Path):
+              files.add(str(path).lstrip("./"))
+
+          if mode == "root":
+              for item in Path(".").iterdir():
+                  if item.is_file():
+                      add_file(item)
+          elif mode == "top":
+              base = Path(paths[0])
+              if base.exists():
+                  for item in base.iterdir():
+                      if item.is_file():
+                          add_file(item)
+          else:
+              for rel in paths:
+                  base = Path(rel)
+                  if base.exists():
+                      for item in base.rglob("*"):
+                          if item.is_file():
+                              add_file(item)
+
+          listfile.write_text("\n".join(sorted(files)) + ("\n" if files else ""))
+
+          gh_out = Path(os.environ["GITHUB_OUTPUT"])
+          with gh_out.open("a", encoding="utf-8") as gh:
+              gh.write(f"listfile={listfile}\n")
+              gh.write(f"empty={'false' if files else 'true'}\n")
+          PY
 
       - name: Run ncs-sbom for ${{ matrix.chunk.name }}
         if: steps.prepare.outputs.empty == 'false'

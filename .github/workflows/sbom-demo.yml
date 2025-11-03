@@ -137,7 +137,7 @@ jobs:
             --license-detectors cache-database \
             --optional-license-detectors '' \
             --input-cache-database sbom/merged-cache.json \
-            --output-html sbom/nrf-applications-sbom.html
+            --output-html sbom/nrf-applications-github-sbomv310.html
 
       - name: Upload combined SBOM
         uses: actions/upload-artifact@v4

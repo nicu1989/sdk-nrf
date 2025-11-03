@@ -31,7 +31,6 @@ jobs:
           - sysbuild
           - test-manifests
           - tests
-          - tmp
           - zephyr
     steps:
       - name: Checkout repository

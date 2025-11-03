@@ -1,0 +1,148 @@
+# Demo workflow: parallel SBOM generation for each application directory
+name: 1A.SBOM Demo - Applications
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    name: Scan ${{ matrix.app_dir }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        app_dir:
+          - asset_tracker_template
+          - connectivity_bridge
+          - hpf
+          - ipc_radio
+          - machine_learning
+          - matter_bridge
+          - matter_weather_station
+          - nrf5340_audio
+          - nrf_desktop
+          - serial_lte_modem
+    steps:
+      - name: Checkout repository
+        uses: nrfconnect/action-checkout-west-update@main
+        with:
+          path: nrf
+          git-fetch-depth: 0
+          git-ref: v3.1.0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev bzip2 xz-utils zlib1g libxml2-dev libxslt1-dev libpopt0
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.12"
+
+      - name: Install Python requirements
+        working-directory: nrf
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements-fixed.txt
+          pip install -r scripts/requirements-west-ncs-sbom.txt
+
+      - name: Run ncs-sbom for ${{ matrix.app_dir }}
+        working-directory: nrf
+        run: |
+          mkdir -p sbom/chunks
+          west ncs-sbom \
+            --input-files "applications/${{ matrix.app_dir }}/**/*" \
+            --license-detectors scancode-toolkit \
+            --optional-license-detectors '' \
+            --output-cache-database "sbom/chunks/${{ matrix.app_dir }}.json" \
+            --output-html "sbom/chunks/${{ matrix.app_dir }}.html" \
+            -n $(nproc)
+
+      - name: Upload chunk artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.app_dir }}
+          path: |
+            nrf/sbom/chunks/${{ matrix.app_dir }}.json
+            nrf/sbom/chunks/${{ matrix.app_dir }}.html
+
+  assemble:
+    name: Assemble combined SBOM
+    needs: scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: nrfconnect/action-checkout-west-update@main
+        with:
+          path: nrf
+          git-fetch-depth: 0
+          git-ref: v3.1.0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev bzip2 xz-utils zlib1g libxml2-dev libxslt1-dev libpopt0
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.12"
+
+      - name: Install Python requirements
+        working-directory: nrf
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements-fixed.txt
+          pip install -r scripts/requirements-west-ncs-sbom.txt
+
+      - name: Download chunk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sbom-*
+          path: nrf/sbom/chunks
+          merge-multiple: false
+
+      - name: Merge cache databases
+        working-directory: nrf
+        run: |
+          python <<'PY'
+          import json
+          from pathlib import Path
+
+          cache_root = Path("sbom/chunks")
+          output = {"files": {}}
+
+          for cache_file in sorted(cache_root.rglob("*.json")):
+            data = json.loads(cache_file.read_text())
+            for rel_path, record in data.get("files", {}).items():
+              existing = output["files"].get(rel_path)
+              if existing and existing["sha1"] != record["sha1"]:
+                raise SystemExit(
+                  f"SHA1 mismatch for {rel_path}: {existing['sha1']} vs {record['sha1']}"
+                )
+              output["files"][rel_path] = record
+
+          merged_path = Path("sbom/merged-cache.json")
+          merged_path.parent.mkdir(parents=True, exist_ok=True)
+          merged_path.write_text(json.dumps(output, indent=2))
+          PY
+
+      - name: Generate combined HTML report
+        working-directory: nrf
+        run: |
+          west ncs-sbom \
+            --input-files "applications/**/*" \
+            --license-detectors cache-database \
+            --optional-license-detectors '' \
+            --input-cache-database sbom/merged-cache.json \
+            --output-html sbom/nrf-applications-sbom.html
+
+      - name: Upload combined SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-combined
+          path: |
+            nrf/sbom/nrf-applications-github-sbomv310.html
+            nrf/sbom/merged-cache.json

@@ -1,12 +1,12 @@
-# Demo workflow: dynamic SBOM generation with parallel chunks
-name: SBOM Demo - Applications
+name: 1A.SBOM FULL
 
 on:
+  pull_request:
   workflow_dispatch:
 
 jobs:
   discover:
-    name: Discover chunks
+    name: Discover root entries
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.collect.outputs.matrix }}
@@ -18,7 +18,7 @@ jobs:
           git-fetch-depth: 0
           git-ref: v3.1.0
 
-      - name: Build chunk matrix
+      - name: Collect directories and files
         id: collect
         working-directory: nrf
         run: |
@@ -29,77 +29,21 @@ jobs:
           root = Path(".")
           entries = []
 
-          GROUP_SIZE = 10
+          for item in sorted(root.iterdir()):
+              if item.name == ".git":
+                  continue
+              if item.is_dir():
+                  entries.append({"name": item.name, "kind": "dir", "path": item.name})
+              elif item.is_file():
+                  entries.append({"name": item.name, "kind": "file", "path": item.name})
 
-          def artifact_name(label: str) -> str:
-              return (label.replace("/", "__")
-                          .replace(" ", "_")
-                          .replace(".", "_"))
-
-          # Root files
-          entries.append({
-              "name": "root",
-              "path": ".",
-              "paths": ["."],
-              "mode": "root",
-              "artifact": "root",
-          })
-
-          SKIP_DIRS = {'.git'}
-
-          for first in sorted(p for p in root.iterdir() if p.is_dir() and p.name not in SKIP_DIRS):
-              rel_first = first.name
-              entries.append({
-                  "name": rel_first,
-                  "path": rel_first,
-                  "paths": [rel_first],
-                  "mode": "top",
-                  "artifact": artifact_name(f"top__{rel_first}"),
-              })
-
-              second_dirs = sorted([p for p in first.iterdir() if p.is_dir()])
-              if len(second_dirs) <= GROUP_SIZE:
-                  for second in second_dirs:
-                      rel_second = str(second.relative_to(root))
-                      entries.append({
-                          "name": rel_second,
-                          "path": rel_second,
-                          "paths": [rel_second],
-                          "mode": "sub",
-                          "artifact": artifact_name(f"sub__{rel_second}"),
-                      })
-              else:
-                  for idx in range(0, len(second_dirs), GROUP_SIZE):
-                      chunk = second_dirs[idx:idx + GROUP_SIZE]
-                      rel_paths = [str(p.relative_to(root)) for p in chunk]
-                      entries.append({
-                          "name": f"{rel_first} group {idx // GROUP_SIZE + 1}",
-                          "path": rel_first,
-                          "paths": rel_paths,
-                          "mode": "group",
-                          "artifact": artifact_name(f"group__{rel_first}__{idx // GROUP_SIZE + 1}"),
-                      })
-
-          matrix = {"chunk": entries}
-          print(json.dumps(matrix))
-          PY
-          )
-          echo "matrix=$matrix_json" >> "$GITHUB_OUTPUT"
-
-                  entries.append({
-                      "name": rel_second,
-                      "path": rel_second,
-                      "mode": "sub",
-                      "artifact": artifact_name(rel_second),
-                  })
-
-          print(json.dumps({"chunk": entries}))
+          print(json.dumps({"entry": entries}))
           PY
           )
           echo "matrix=$matrix_json" >> "$GITHUB_OUTPUT"
 
   scan:
-    name: Scan ${{ matrix.chunk.name }}
+    name: Scan ${{ matrix.entry.name }}
     needs: discover
     runs-on: ubuntu-24.04
     strategy:
@@ -131,86 +75,60 @@ jobs:
           pip install -r scripts/requirements-west-ncs-sbom.txt
 
       - name: Prepare input list
-        id: prepare
-        working-directory: nrf
-        env:
-          CHUNK_JSON: ${{ toJSON(matrix.chunk) }}
-        run: |
-          python3 <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          chunk = json.loads(os.environ["CHUNK_JSON"])
-          mode = chunk["mode"]
-          paths = chunk.get("paths", [])
-
-          chunk_dir = Path("sbom/chunks")
-          chunk_dir.mkdir(parents=True, exist_ok=True)
-          listfile = chunk_dir / f"{chunk['artifact']}.lst"
-
-          files = set()
-
-          def add_file(path: Path):
-              files.add(str(path).lstrip("./"))
-
-          if mode == "root":
-              for item in Path(".").iterdir():
-                  if item.is_file():
-                      add_file(item)
-          elif mode == "top":
-              base = Path(paths[0])
-              if base.exists():
-                  for item in base.iterdir():
-                      if item.is_file():
-                          add_file(item)
-          else:
-              for rel in paths:
-                  base = Path(rel)
-                  if base.exists():
-                      for item in base.rglob("*"):
-                          if item.is_file():
-                              add_file(item)
-
-          listfile.write_text("\n".join(sorted(files)) + ("\n" if files else ""))
-
-          gh_out = Path(os.environ["GITHUB_OUTPUT"])
-          with gh_out.open("a", encoding="utf-8") as gh:
-              gh.write(f"listfile={listfile}\n")
-              gh.write(f"empty={'false' if files else 'true'}\n")
-          PY
-
-      - name: Run ncs-sbom for ${{ matrix.chunk.name }}
-        if: steps.prepare.outputs.empty == 'false'
-        working-directory: nrf
-        run: |
-          west ncs-sbom \
-            --input-list-file "${{ steps.prepare.outputs.listfile }}" \
-            --license-detectors scancode-toolkit \
-            --optional-license-detectors '' \
-            --output-cache-database "sbom/chunks/${{ matrix.chunk.artifact }}.json" \
-            --output-html "sbom/chunks/${{ matrix.chunk.artifact }}.html" \
-            -n $(nproc)
-
-      - name: Create empty outputs
-        if: steps.prepare.outputs.empty == 'true'
+        id: prep
         working-directory: nrf
         run: |
           mkdir -p sbom/chunks
-          printf '{"files":{}}' > "sbom/chunks/${{ matrix.chunk.artifact }}.json"
-          cat <<'HTML' > "sbom/chunks/${{ matrix.chunk.artifact }}.html"
+          artifact="${{ matrix.entry.path }}"
+          artifact="${artifact//\//__}"
+          artifact="${artifact// /_}"
+          artifact="${artifact//./_}"
+          listfile="sbom/chunks/${artifact}.lst"
+          if [ "${{ matrix.entry.kind }}" = "dir" ]; then
+            find "${{ matrix.entry.path }}" -type f -print > "$listfile"
+          else
+            printf '%s\n' "${{ matrix.entry.path }}" > "$listfile"
+          fi
+          if [ ! -s "$listfile" ]; then
+            rm -f "$listfile"
+            touch "$listfile"
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "listfile=$listfile" >> "$GITHUB_OUTPUT"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+
+      - name: Run ncs-sbom for ${{ matrix.entry.name }}
+        if: steps.prep.outputs.empty == 'false'
+        working-directory: nrf
+        run: |
+          west ncs-sbom \
+            --input-list-file "${{ steps.prep.outputs.listfile }}" \
+            --license-detectors scancode-toolkit \
+            --optional-license-detectors '' \
+            --output-cache-database "sbom/chunks/${{ steps.prep.outputs.artifact }}.json" \
+            --output-html "sbom/chunks/${{ steps.prep.outputs.artifact }}.html" \
+            -n $(nproc)
+
+      - name: Create empty outputs
+        if: steps.prep.outputs.empty == 'true'
+        working-directory: nrf
+        run: |
+          printf '{"files":{}}' > "sbom/chunks/${{ steps.prep.outputs.artifact }}.json"
+          cat <<'HTML' > "sbom/chunks/${{ steps.prep.outputs.artifact }}.html"
           <!DOCTYPE html>
-          <html lang="en"><body><p>No files detected for this chunk.</p></body></html>
+          <html lang="en"><body><p>No files detected for this entry.</p></body></html>
           HTML
 
       - name: Upload chunk artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-${{ matrix.chunk.artifact }}
+          name: sbom-${{ steps.prep.outputs.artifact }}
           path: |
-            nrf/sbom/chunks/${{ matrix.chunk.artifact }}.json
-            nrf/sbom/chunks/${{ matrix.chunk.artifact }}.html
-            nrf/sbom/chunks/${{ matrix.chunk.artifact }}.lst
+            nrf/${{ steps.prep.outputs.listfile }}
+            nrf/sbom/chunks/${{ steps.prep.outputs.artifact }}.json
+            nrf/sbom/chunks/${{ steps.prep.outputs.artifact }}.html
 
   assemble:
     name: Assemble combined SBOM
@@ -273,7 +191,7 @@ jobs:
           merged_path.write_text(json.dumps(output, indent=2))
           PY
 
-      - name: Build consolidated input list
+      - name: Create aggregated input list
         working-directory: nrf
         run: |
           find sbom/chunks -name '*.lst' -print0 | xargs -0 cat | sed '/^$/d' | sort -u > sbom/all-files.lst
@@ -286,13 +204,13 @@ jobs:
             --license-detectors cache-database \
             --optional-license-detectors '' \
             --input-cache-database sbom/merged-cache.json \
-            --output-html sbom/output_full_v3.1.0.html
+            --output-html sbom/nrf-full-github-sbomv310.html
 
       - name: Upload combined SBOM
         uses: actions/upload-artifact@v4
         with:
           name: sbom-combined
           path: |
-            nrf/sbom/output_full_v3.1.0.html
+            nrf/sbom/nrf-full-github-sbomv310.html
             nrf/sbom/merged-cache.json
             nrf/sbom/all-files.lst

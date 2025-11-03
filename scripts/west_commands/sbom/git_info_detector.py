@@ -5,11 +5,12 @@
 
 import sys
 from pathlib import Path
+from urllib.parse import quote, urlparse
 from west import log
 from args import args
 from common import SbomException, command_execute, concurrent_pool_iter
-from data_structure import Data, FileInfo, Package  # pylint: disable=unused-import
-                                                    # FileInfo is used.
+from data_structure import Data, ExternalRef, FileInfo, Package  # pylint: disable=unused-import
+                                                                 # FileInfo is used.
 
 
 def split_lines(text: str) -> 'tuple[str]':
@@ -62,6 +63,60 @@ def get_origin(absolute_path: Path, relative_path: Path) -> 'str|None':
     return None
 
 
+def normalize_git_url(url: 'str|None') -> 'str|None':
+    '''Convert git remote URL into an HTTPS form when possible.'''
+    if url is None:
+        return None
+    url = url.strip()
+    if url.startswith('git@'):
+        user_host, path = url.split(':', 1)
+        host = user_host.split('@', 1)[1]
+        url = f'https://{host}/{path}'
+    elif url.startswith('ssh://git@'):
+        parsed = urlparse(url)
+        path = parsed.path.lstrip('/')
+        url = f'https://{parsed.hostname}/{path}'
+    if url.endswith('.git'):
+        url = url[:-4]
+    return url
+
+
+def detect_supplier(url: 'str|None') -> 'str|None':
+    '''Derive supplier name from git remote URL.'''
+    if url is None:
+        return None
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        return None
+    parts = [part for part in parsed.path.split('/') if part]
+    if parts:
+        return parts[0]
+    return parsed.hostname
+
+
+def make_git_purl(url: 'str|None', sha: 'str|None') -> 'str|None':
+    '''Create a rudimentary git PURL from remote URL and commit SHA.'''
+    if url is None:
+        return None
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        return None
+    parts = [part for part in parsed.path.split('/') if part]
+    if not parts:
+        return None
+    namespace_parts = [quote(part, safe='') for part in parts[:-1]]
+    name = quote(parts[-1], safe='')
+    locator = 'pkg:git/'
+    if namespace_parts:
+        locator += '/'.join(namespace_parts)
+        locator += '/'
+    locator += name
+    if sha:
+        locator += f'@{sha}'
+    locator += f'?vcs_url={quote(url)}'
+    return locator
+
+
 def get_sha(absolute_path: Path) -> 'str|None':
     ''' Returns git commit SHA on specified path. '''
     output, error_code = command_execute(args.git, 'rev-parse', 'HEAD',
@@ -81,6 +136,7 @@ def detect_dir(func_args: 'tuple[list[FileInfo],Data]') -> None:
     relative_path = Path(files[0].file_rel_path).parent
     git_sha = get_sha(absolute_path)
     git_origin = get_origin(absolute_path, relative_path)
+    normalized_origin = normalize_git_url(git_origin)
     if (git_sha is not None) and (git_origin is not None):
         package_id = f'git#{git_origin}#{git_sha}'.upper()
         output, error_code = command_execute(args.git, 'status', '--porcelain', '--ignored',
@@ -101,8 +157,16 @@ def detect_dir(func_args: 'tuple[list[FileInfo],Data]') -> None:
     if package_id not in data.packages:
         package = Package()
         package.id = package_id
-        package.url = git_origin
+        package.url = normalized_origin or git_origin
         package.version = git_sha
+        package.supplier_name = detect_supplier(normalized_origin or git_origin)
+        purl = make_git_purl(normalized_origin, git_sha)
+        if purl:
+            ref = ExternalRef()
+            ref.reference_category = 'PACKAGE-MANAGER'
+            ref.reference_type = 'purl'
+            ref.reference_locator = purl
+            package.external_refs.append(ref)
         data.packages[package_id] = package
     for file in files:
         file.package = package_id

@@ -33,6 +33,7 @@ class FileInfo(DataBaseClass):
         local_modifications The file was modified and does not match version of this package
         sha1                SHA-1 of the file
         detectors           Set of detectors that contributed to the list of licenses
+        spdx_id             Stable SPDX identifier assigned during output preparation
     '''
     file_path: Path
     file_rel_path: Path
@@ -42,6 +43,7 @@ class FileInfo(DataBaseClass):
     local_modifications: bool = False
     sha1: str
     detectors: 'set[str]' = set()
+    spdx_id: str = ''
 
 
 class License(DataBaseClass):
@@ -74,12 +76,35 @@ class Package(DataBaseClass):
         url            URL pointing to the source of this package
         version        Version string of this package
         browser_url    URL that can be opened in a web browser
+        supplier_name  Name of the supplier organization/person
+        supplier_contact Optional contact information for the supplier
+        external_refs  List of external references (for example, PURL or CPE)
     '''
     id: str = ''
     name: 'str|None' = None
     url: 'str|None' = None
     version: 'str|None' = None
     browser_url: 'str|None' = None
+    supplier_name: 'str|None' = None
+    supplier_contact: 'str|None' = None
+    external_refs: 'list["ExternalRef"]' = list()
+    spdx_id: str = ''
+
+
+class Relationship(DataBaseClass):
+    '''Contains SPDX relationship information'''
+    spdx_id: str
+    related_spdx_id: str
+    relationship_type: str
+    comment: 'str|None' = None
+
+
+class ExternalRef(DataBaseClass):
+    '''Contains SPDX external reference information'''
+    reference_category: str
+    reference_type: str
+    reference_locator: str
+    comment: 'str|None' = None
 
 
 class LicenseExpr(DataBaseClass):
@@ -121,6 +146,7 @@ class Data(DataBaseClass):
         inputs           List of user friendly input description.
         detectors        Set containing all detectors that were involved in license detection.
         report_uuid      Random UUID that can be used in the output.
+        relationships    List of SPDX relationship entries.
     '''
     files: 'list[FileInfo]' = list()
     licenses: 'dict[License|LicenseExpr]' = dict()
@@ -130,3 +156,4 @@ class Data(DataBaseClass):
     inputs: 'list[str]' = list()
     detectors: 'set[str]' = set()
     report_uuid: 'str' = uuid4()
+    relationships: 'list[Relationship]' = list()

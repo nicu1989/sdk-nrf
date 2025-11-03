@@ -19,11 +19,17 @@ CreatorComment:<text>Generated with west-ncs-sbom. For details, see https://deve
 # Package Information
 
 PackageName: {{packages[package_id].name or packages[package_id].url or 'unknown-package'}}
-SPDXID: SPDXRef-package-{{func.counter()}}
+SPDXID: {{packages[package_id].spdx_id}}
 {% if packages[package_id].version -%}
 PackageVersion: {{packages[package_id].version}}
 {% endif -%}
 PackageDownloadLocation: {{packages[package_id].url or 'NONE'}}
+{% if packages[package_id].supplier_name -%}
+PackageSupplier: Organization: {{packages[package_id].supplier_name}}{{ ' (' ~ packages[package_id].supplier_contact ~ ')' if packages[package_id].supplier_contact else '' }}
+{% endif -%}
+{% for ref in packages[package_id].external_refs -%}
+ExternalRef: {{ref.reference_category}} {{ref.reference_type}} {{ref.reference_locator}}{{ ' <text>' ~ ref.comment ~ '</text>' if ref.comment else '' }}
+{% endfor -%}
 FilesAnalyzed: true
 PackageVerificationCode: {{files_by_package[package_id] | verification_code}}
 PackageLicenseConcluded: NOASSERTION
@@ -36,7 +42,7 @@ PackageCopyrightText: NOASSERTION
 # File
 
 FileName: {{func.relative_path(file.file_path)}}
-SPDXID: SPDXRef-file-{{func.counter()}}
+SPDXID: {{file.spdx_id}}
 FileChecksum: SHA1: {{file.sha1}}
 {% if file.local_modifications -%}
 FileComment: <text>This file is modified locally.</text>
@@ -60,3 +66,11 @@ LicenseCrossReference: {{licenses[license].url}}
 {% endif -%}
 ExtractedText: <text>{{ licenses[license].text }}</text>
 {% endfor %}
+
+{% if relationships and relationships|length > 0 -%}
+
+# Relationships
+{% for relation in relationships -%}
+Relationship: {{relation.spdx_id}} {{relation.relationship_type}} {{relation.related_spdx_id}}{{ ' <text>' ~ relation.comment ~ '</text>' if relation.comment else '' }}
+{% endfor -%}
+{% endif -%}

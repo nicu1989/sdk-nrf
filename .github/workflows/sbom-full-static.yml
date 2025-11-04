@@ -6,81 +6,114 @@ on:
 
 jobs:
   scan:
-    name: Scan ${{ matrix.name || matrix.target }}
+    name: Scan chunk ${{ matrix.chunk_index }}
     runs-on: ubuntu-24.04
+    env:
+      CHUNK_COUNT: "100"
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - applications
-          - boards
-          - cmake
-          - doc
-          - drivers
-          - dts
-          - ext
-          - include
-          - lib
-          - modules
-          - scripts
-          - share
-          - snippets
-          - soc
-          - subsys
-          - sysbuild
-          - test-manifests
-          - tests
-          - zephyr
-          - root-files
-          - samples-root-files
-          - samples/app_event_manager
-          - samples/app_event_manager_profiler_tracer
-          - samples/app_jwt
-          - samples/benchmarks
-          - samples/bluetooth
-          - samples/bootloader
-          - samples/caf
-          - samples/caf_sensor_manager
-          - samples/cellular
-          - samples/common
-          - samples/crypto
-          - samples/debug
-          - samples/dect
-          - samples/dfu
-          - samples/edge_impulse
-          - samples/esb
-          - samples/event_manager_proxy
-          - samples/gazell
-          - samples/hw_id
-          - samples/ipc
-          - samples/ironside_se
-          - samples/keys
-          - samples/matter
-          - samples/mcuboot
-          - samples/mpsl
-          - samples/net
-          - samples/nfc
-          - samples/nrf5340
-          - samples/nrf54h20
-          - samples/nrf_compress
-          - samples/nrf_profiler
-          - samples/nrf_rpc
-          - samples/openthread
-          - samples/peripheral
-          - samples/pmic
-          - samples/sensor
-          - samples/tfm
-          - samples/wifi
-          - samples/zephyr
-        include:
-          - target: root-files
-            path: .
-            kind: files
-            name: root files
-          - target: samples-root-files
-            path: samples
-            kind: files
-            name: samples (root files)
+        chunk_index:
+          - 0
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+          - 8
+          - 9
+          - 10
+          - 11
+          - 12
+          - 13
+          - 14
+          - 15
+          - 16
+          - 17
+          - 18
+          - 19
+          - 20
+          - 21
+          - 22
+          - 23
+          - 24
+          - 25
+          - 26
+          - 27
+          - 28
+          - 29
+          - 30
+          - 31
+          - 32
+          - 33
+          - 34
+          - 35
+          - 36
+          - 37
+          - 38
+          - 39
+          - 40
+          - 41
+          - 42
+          - 43
+          - 44
+          - 45
+          - 46
+          - 47
+          - 48
+          - 49
+          - 50
+          - 51
+          - 52
+          - 53
+          - 54
+          - 55
+          - 56
+          - 57
+          - 58
+          - 59
+          - 60
+          - 61
+          - 62
+          - 63
+          - 64
+          - 65
+          - 66
+          - 67
+          - 68
+          - 69
+          - 70
+          - 71
+          - 72
+          - 73
+          - 74
+          - 75
+          - 76
+          - 77
+          - 78
+          - 79
+          - 80
+          - 81
+          - 82
+          - 83
+          - 84
+          - 85
+          - 86
+          - 87
+          - 88
+          - 89
+          - 90
+          - 91
+          - 92
+          - 93
+          - 94
+          - 95
+          - 96
+          - 97
+          - 98
+          - 99
     steps:
       - name: Checkout repository
         uses: nrfconnect/action-checkout-west-update@main
@@ -111,43 +144,82 @@ jobs:
         working-directory: nrf
         run: |
           mkdir -p sbom/chunks
-          artifact="${{ matrix.target }}"
-          artifact="${artifact//\//__}"
-          artifact="${artifact// /_}"
-          artifact="${artifact//./_}"
+          chunk_index="${{ matrix.chunk_index }}"
+          chunk_id=$(printf "%03d" "$chunk_index")
+          artifact="chunk_${chunk_id}"
           listfile="sbom/chunks/${artifact}.lst"
-          entry_path="${{ matrix.path || matrix.target }}"
-          entry_kind="${{ matrix.kind || 'dir' }}"
-          case "$entry_kind" in
-            dir)
-              find "$entry_path" -type f -print > "$listfile"
-              ;;
-            files)
-              find "$entry_path" -maxdepth 1 -type f -print > "$listfile"
-              ;;
-            file)
-              printf '%s\n' "$entry_path" > "$listfile"
-              ;;
-            *)
-              echo "Unknown entry kind: $entry_kind" >&2
-              exit 1
-              ;;
-          esac
-          sed -i 's|^\./||' "$listfile"
-          sed -i '/^$/d' "$listfile"
+          export CHUNK_INDEX="$chunk_index"
+          export ARTIFACT="$artifact"
+          LISTFILE="$listfile" python3 <<'PY'
+import math
+import os
+from pathlib import Path
+
+chunk_count = int(os.environ.get("CHUNK_COUNT", "100"))
+chunk_index = int(os.environ["CHUNK_INDEX"])
+artifact = os.environ["ARTIFACT"]
+chunk_dir = Path("sbom/chunks").resolve()
+chunk_dir.mkdir(parents=True, exist_ok=True)
+listfile = chunk_dir / f"{artifact}.lst"
+
+root = Path(".").resolve()
+ignored_roots = {".git", "sbom", ".venv-ncs-sbom"}
+
+files = []
+for path in sorted(root.rglob("*")):
+    if not path.is_file():
+        continue
+    rel = path.relative_to(root)
+    if rel.parts and rel.parts[0] in ignored_roots:
+        continue
+    files.append(path)
+
+total = len(files)
+if total == 0 or chunk_count <= 0:
+    chunk_entries = []
+else:
+    chunk_size = math.ceil(total / chunk_count)
+    start = chunk_index * chunk_size
+    if start >= total:
+        chunk_entries = []
+    else:
+        end = min(start + chunk_size, total)
+        chunk_entries = files[start:end]
+
+lines = []
+for path in chunk_entries:
+    rel_to_chunk = os.path.relpath(path, start=chunk_dir)
+    lines.append(rel_to_chunk)
+
+if lines:
+    listfile.write_text("\n".join(lines) + "\n")
+else:
+    listfile.write_text("")
+
+with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+    fh.write(f"total={total}\n")
+    if total > 0 and chunk_count > 0:
+        chunk_size = math.ceil(total / chunk_count)
+        start = chunk_index * chunk_size
+        end = min(start + chunk_size, total)
+    else:
+        start = end = 0
+    fh.write(f"chunk_start={start}\n")
+    fh.write(f"chunk_end={end}\n")
+PY
           if [ ! -s "$listfile" ]; then
-            rm -f "$listfile"
-            touch "$listfile"
             echo "empty=true" >> "$GITHUB_OUTPUT"
+            : > "$listfile"
           else
             echo "empty=false" >> "$GITHUB_OUTPUT"
           fi
           echo "LISTFILE: $listfile"
+          cat "$listfile"
           echo "ARTIFACT: $artifact"
           echo "listfile=$listfile" >> "$GITHUB_OUTPUT"
           echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
 
-      - name: Run ncs-sbom for ${{ matrix.name || matrix.target }}
+      - name: Run ncs-sbom for chunk ${{ matrix.chunk_index }}
         if: steps.prep.outputs.empty == 'false'
         working-directory: nrf
         run: |
@@ -244,7 +316,35 @@ jobs:
       - name: Create aggregated input list
         working-directory: nrf
         run: |
-          find sbom/chunks -name '*.lst' -print0 | xargs -0 cat | sed '/^$/d' | sort -u > sbom/all-files.lst
+          python <<'PY'
+          import os
+          from pathlib import Path
+
+          chunks_root = Path("sbom/chunks")
+          aggregated = Path("sbom/all-files.lst")
+          aggregated.parent.mkdir(parents=True, exist_ok=True)
+
+          files = set()
+          for list_path in sorted(chunks_root.rglob("*.lst")):
+            base = list_path.parent.resolve()
+            try:
+              lines = list_path.read_text().splitlines()
+            except FileNotFoundError:
+              continue
+            for line in lines:
+              entry = line.strip()
+              if not entry or entry.startswith("#"):
+                continue
+              candidate = (base / entry).resolve()
+              if candidate.is_file():
+                files.add(candidate)
+
+          sbom_root = aggregated.parent.resolve()
+          with aggregated.open("w") as out:
+            for path in sorted(files):
+              rel_path = os.path.relpath(path, start=sbom_root)
+              out.write(f"{rel_path}\n")
+          PY
 
       - name: Generate combined HTML report
         working-directory: nrf

@@ -6,12 +6,12 @@ on:
 
 jobs:
   scan:
-    name: Scan ${{ matrix.app_dir }}
+    name: Scan ${{ matrix.name || matrix.target }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        app_dir:
+        target:
           - applications
           - boards
           - cmake
@@ -22,7 +22,6 @@ jobs:
           - include
           - lib
           - modules
-          - samples
           - scripts
           - share
           - snippets
@@ -32,6 +31,56 @@ jobs:
           - test-manifests
           - tests
           - zephyr
+          - root-files
+          - samples-root-files
+          - samples/app_event_manager
+          - samples/app_event_manager_profiler_tracer
+          - samples/app_jwt
+          - samples/benchmarks
+          - samples/bluetooth
+          - samples/bootloader
+          - samples/caf
+          - samples/caf_sensor_manager
+          - samples/cellular
+          - samples/common
+          - samples/crypto
+          - samples/debug
+          - samples/dect
+          - samples/dfu
+          - samples/edge_impulse
+          - samples/esb
+          - samples/event_manager_proxy
+          - samples/gazell
+          - samples/hw_id
+          - samples/ipc
+          - samples/ironside_se
+          - samples/keys
+          - samples/matter
+          - samples/mcuboot
+          - samples/mpsl
+          - samples/net
+          - samples/nfc
+          - samples/nrf5340
+          - samples/nrf54h20
+          - samples/nrf_compress
+          - samples/nrf_profiler
+          - samples/nrf_rpc
+          - samples/openthread
+          - samples/peripheral
+          - samples/pmic
+          - samples/sensor
+          - samples/tfm
+          - samples/wifi
+          - samples/zephyr
+        include:
+          - target: root-files
+            path: .
+            kind: files
+            name: root files
+          - target: samples-root-files
+            path: samples
+            kind: files
+            name: samples (root files)
     steps:
       - name: Checkout repository
         uses: nrfconnect/action-checkout-west-update@main
@@ -57,25 +106,79 @@ jobs:
           pip install -r scripts/requirements-fixed.txt
           pip install -r scripts/requirements-west-ncs-sbom.txt
 
-      - name: Run ncs-sbom for ${{ matrix.app_dir }}
+      - name: Prepare input list
+        id: prep
+        working-directory: nrf
+        run: |
+          mkdir -p sbom/chunks
+          artifact="${{ matrix.target }}"
+          artifact="${artifact//\//__}"
+          artifact="${artifact// /_}"
+          artifact="${artifact//./_}"
+          listfile="sbom/chunks/${artifact}.lst"
+          entry_path="${{ matrix.path || matrix.target }}"
+          entry_kind="${{ matrix.kind || 'dir' }}"
+          case "$entry_kind" in
+            dir)
+              find "$entry_path" -type f -print > "$listfile"
+              ;;
+            files)
+              find "$entry_path" -maxdepth 1 -type f -print > "$listfile"
+              ;;
+            file)
+              printf '%s\n' "$entry_path" > "$listfile"
+              ;;
+            *)
+              echo "Unknown entry kind: $entry_kind" >&2
+              exit 1
+              ;;
+          esac
+          sed -i 's|^\./||' "$listfile"
+          sed -i '/^$/d' "$listfile"
+          if [ ! -s "$listfile" ]; then
+            rm -f "$listfile"
+            touch "$listfile"
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "LISTFILE: $listfile"
+          echo "ARTIFACT: $artifact"
+          echo "listfile=$listfile" >> "$GITHUB_OUTPUT"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+
+      - name: Run ncs-sbom for ${{ matrix.name || matrix.target }}
+        if: steps.prep.outputs.empty == 'false'
         working-directory: nrf
         run: |
           mkdir -p sbom/chunks
           west ncs-sbom \
-            --input-files "${{ matrix.app_dir }}/**/*" \
+            --input-list-file "${{ steps.prep.outputs.listfile }}" \
             --license-detectors scancode-toolkit \
             --optional-license-detectors '' \
-            --output-cache-database "sbom/chunks/${{ matrix.app_dir }}.json" \
-            --output-html "sbom/chunks/${{ matrix.app_dir }}.html" \
+            --output-cache-database "sbom/chunks/${{ steps.prep.outputs.artifact }}.json" \
+            --output-html "sbom/chunks/${{ steps.prep.outputs.artifact }}.html" \
             -n $(nproc)
+
+      - name: Create empty outputs
+        if: steps.prep.outputs.empty == 'true'
+        working-directory: nrf
+        run: |
+          mkdir -p sbom/chunks
+          printf '{"files":{}}' > "sbom/chunks/${{ steps.prep.outputs.artifact }}.json"
+          cat <<'HTML' > "sbom/chunks/${{ steps.prep.outputs.artifact }}.html"
+          <!DOCTYPE html>
+          <html lang="en"><body><p>No files detected for this entry.</p></body></html>
+          HTML
 
       - name: Upload chunk artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-${{ matrix.app_dir }}
+          name: sbom-${{ steps.prep.outputs.artifact }}
           path: |
-            nrf/sbom/chunks/${{ matrix.app_dir }}.json
-            nrf/sbom/chunks/${{ matrix.app_dir }}.html
+            nrf/${{ steps.prep.outputs.listfile }}
+            nrf/sbom/chunks/${{ steps.prep.outputs.artifact }}.json
+            nrf/sbom/chunks/${{ steps.prep.outputs.artifact }}.html
 
   assemble:
     name: Assemble combined SBOM
@@ -138,11 +241,16 @@ jobs:
           merged_path.write_text(json.dumps(output, indent=2))
           PY
 
+      - name: Create aggregated input list
+        working-directory: nrf
+        run: |
+          find sbom/chunks -name '*.lst' -print0 | xargs -0 cat | sed '/^$/d' | sort -u > sbom/all-files.lst
+
       - name: Generate combined HTML report
         working-directory: nrf
         run: |
           west ncs-sbom \
-            --input-files "applications/**/*" \
+            --input-list-file sbom/all-files.lst \
             --license-detectors cache-database \
             --optional-license-detectors '' \
             --input-cache-database sbom/merged-cache.json \
@@ -155,3 +263,4 @@ jobs:
           path: |
             nrf/sbom/nrf-full-static-github-sbomv310.html
             nrf/sbom/merged-cache.json
+            nrf/sbom/all-files.lst

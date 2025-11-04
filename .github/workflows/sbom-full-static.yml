@@ -5,115 +5,46 @@ on:
   workflow_dispatch:
 
 jobs:
-  scan:
-    name: Scan chunk ${{ matrix.chunk_index }}
+  discover:
+    name: Prepare chunk lists
     runs-on: ubuntu-24.04
     env:
       CHUNK_COUNT: "100"
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+      chunk_count: ${{ steps.generate.outputs.chunk_count }}
+      total_files: ${{ steps.generate.outputs.total }}
+    steps:
+      - name: Checkout repository
+        uses: nrfconnect/action-checkout-west-update@main
+        with:
+          path: nrf
+          git-fetch-depth: 0
+          git-ref: v3.1.0
+
+      - name: Generate chunk lists
+        id: generate
+        working-directory: nrf
+        run: |
+          mkdir -p sbom/chunks
+          python3 -c $'import json\nimport math\nimport os\nfrom pathlib import Path\n\nchunk_count = max(int(os.environ.get("CHUNK_COUNT", "100")), 1)\nroot = Path(".").resolve()\nignored_roots = {".git", "sbom", ".venv-ncs-sbom"}\nfiles = []\nfor path in sorted(root.rglob("*")):\n    if not path.is_file():\n        continue\n    rel = path.relative_to(root)\n    if rel.parts and rel.parts[0] in ignored_roots:\n        continue\n    files.append(path)\nchunk_dir = (Path("sbom") / "chunks").resolve()\nchunk_dir.mkdir(parents=True, exist_ok=True)\nchunk_size = math.ceil(len(files) / chunk_count) if files else 0\nfor idx in range(chunk_count):\n    if chunk_size == 0:\n        chunk_entries = []\n    else:\n        start = idx * chunk_size\n        if start >= len(files):\n            chunk_entries = []\n        else:\n            end = min(start + chunk_size, len(files))\n            chunk_entries = files[start:end]\n    listfile = chunk_dir / (f"chunk_{idx:03}.lst")\n    lines = [os.path.relpath(path, start=chunk_dir) for path in chunk_entries]\n    listfile.write_text(\"\\n\".join(lines) + (\"\\n\" if lines else \"\"))\nmatrix = json.dumps({\"chunk_index\": list(range(chunk_count))})\nwith open(os.environ[\"GITHUB_OUTPUT\"], \"a\", encoding=\"utf-8\") as fh:\n    fh.write(f\"matrix={matrix}\\n\")\n    fh.write(f\"chunk_count={chunk_count}\\n\")\n    fh.write(f\"total={len(files)}\\n\")\n'
+
+      - name: Upload chunk definitions
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-chunks
+          path: |
+            nrf/sbom/chunks
+
+  scan:
+    name: Scan chunk ${{ matrix.chunk_index }}
+    needs: discover
+    runs-on: ubuntu-24.04
+    env:
+      CHUNK_COUNT: ${{ needs.discover.outputs.chunk_count || '100' }}
     strategy:
       fail-fast: false
-      matrix:
-        chunk_index:
-          - 0
-          - 1
-          - 2
-          - 3
-          - 4
-          - 5
-          - 6
-          - 7
-          - 8
-          - 9
-          - 10
-          - 11
-          - 12
-          - 13
-          - 14
-          - 15
-          - 16
-          - 17
-          - 18
-          - 19
-          - 20
-          - 21
-          - 22
-          - 23
-          - 24
-          - 25
-          - 26
-          - 27
-          - 28
-          - 29
-          - 30
-          - 31
-          - 32
-          - 33
-          - 34
-          - 35
-          - 36
-          - 37
-          - 38
-          - 39
-          - 40
-          - 41
-          - 42
-          - 43
-          - 44
-          - 45
-          - 46
-          - 47
-          - 48
-          - 49
-          - 50
-          - 51
-          - 52
-          - 53
-          - 54
-          - 55
-          - 56
-          - 57
-          - 58
-          - 59
-          - 60
-          - 61
-          - 62
-          - 63
-          - 64
-          - 65
-          - 66
-          - 67
-          - 68
-          - 69
-          - 70
-          - 71
-          - 72
-          - 73
-          - 74
-          - 75
-          - 76
-          - 77
-          - 78
-          - 79
-          - 80
-          - 81
-          - 82
-          - 83
-          - 84
-          - 85
-          - 86
-          - 87
-          - 88
-          - 89
-          - 90
-          - 91
-          - 92
-          - 93
-          - 94
-          - 95
-          - 96
-          - 97
-          - 98
-          - 99
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     steps:
       - name: Checkout repository
         uses: nrfconnect/action-checkout-west-update@main
@@ -139,75 +70,21 @@ jobs:
           pip install -r scripts/requirements-fixed.txt
           pip install -r scripts/requirements-west-ncs-sbom.txt
 
+      - name: Download chunk definitions
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-chunks
+          path: .
+
       - name: Prepare input list
         id: prep
         working-directory: nrf
         run: |
-          mkdir -p sbom/chunks
           chunk_index="${{ matrix.chunk_index }}"
           chunk_id=$(printf "%03d" "$chunk_index")
           artifact="chunk_${chunk_id}"
           listfile="sbom/chunks/${artifact}.lst"
-          export CHUNK_INDEX="$chunk_index"
-          export ARTIFACT="$artifact"
-          LISTFILE="$listfile" python3 <<'PY'
-import math
-import os
-from pathlib import Path
-
-chunk_count = int(os.environ.get("CHUNK_COUNT", "100"))
-chunk_index = int(os.environ["CHUNK_INDEX"])
-artifact = os.environ["ARTIFACT"]
-chunk_dir = Path("sbom/chunks").resolve()
-chunk_dir.mkdir(parents=True, exist_ok=True)
-listfile = chunk_dir / f"{artifact}.lst"
-
-root = Path(".").resolve()
-ignored_roots = {".git", "sbom", ".venv-ncs-sbom"}
-
-files = []
-for path in sorted(root.rglob("*")):
-    if not path.is_file():
-        continue
-    rel = path.relative_to(root)
-    if rel.parts and rel.parts[0] in ignored_roots:
-        continue
-    files.append(path)
-
-total = len(files)
-if total == 0 or chunk_count <= 0:
-    chunk_entries = []
-else:
-    chunk_size = math.ceil(total / chunk_count)
-    start = chunk_index * chunk_size
-    if start >= total:
-        chunk_entries = []
-    else:
-        end = min(start + chunk_size, total)
-        chunk_entries = files[start:end]
-
-lines = []
-for path in chunk_entries:
-    rel_to_chunk = os.path.relpath(path, start=chunk_dir)
-    lines.append(rel_to_chunk)
-
-if lines:
-    listfile.write_text("\n".join(lines) + "\n")
-else:
-    listfile.write_text("")
-
-with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-    fh.write(f"total={total}\n")
-    if total > 0 and chunk_count > 0:
-        chunk_size = math.ceil(total / chunk_count)
-        start = chunk_index * chunk_size
-        end = min(start + chunk_size, total)
-    else:
-        start = end = 0
-    fh.write(f"chunk_start={start}\n")
-    fh.write(f"chunk_end={end}\n")
-PY
-          if [ ! -s "$listfile" ]; then
+          if [ ! -f "$listfile" ] || [ ! -s "$listfile" ]; then
             echo "empty=true" >> "$GITHUB_OUTPUT"
             : > "$listfile"
           else

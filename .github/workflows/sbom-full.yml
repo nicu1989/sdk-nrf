@@ -1,0 +1,216 @@
+name: 1A.SBOM FULL
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  discover:
+    name: Discover root entries
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.collect.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: nrfconnect/action-checkout-west-update@main
+        with:
+          path: nrf
+          git-fetch-depth: 0
+          git-ref: v3.1.0
+
+      - name: Collect directories and files
+        id: collect
+        working-directory: nrf
+        run: |
+          matrix_json=$(python3 <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path(".")
+          entries = []
+
+          for item in sorted(root.iterdir()):
+              if item.name == ".git":
+                  continue
+              if item.is_dir():
+                  entries.append({"name": item.name, "kind": "dir", "path": item.name})
+              elif item.is_file():
+                  entries.append({"name": item.name, "kind": "file", "path": item.name})
+
+          print(json.dumps({"entry": entries}))
+          PY
+          )
+          echo "matrix=$matrix_json" >> "$GITHUB_OUTPUT"
+
+  scan:
+    name: Scan ${{ matrix.entry.name }}
+    needs: discover
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: nrfconnect/action-checkout-west-update@main
+        with:
+          path: nrf
+          git-fetch-depth: 0
+          git-ref: v3.1.0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev bzip2 xz-utils zlib1g libxml2-dev libxslt1-dev libpopt0
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.12"
+
+      - name: Install Python requirements
+        working-directory: nrf
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements-fixed.txt
+          pip install -r scripts/requirements-west-ncs-sbom.txt
+
+      - name: Prepare input list
+        id: prep
+        working-directory: nrf
+        run: |
+          mkdir -p sbom/chunks
+          artifact="${{ matrix.entry.path }}"
+          artifact="${artifact//\//__}"
+          artifact="${artifact// /_}"
+          artifact="${artifact//./_}"
+          listfile="sbom/chunks/${artifact}.lst"
+          if [ "${{ matrix.entry.kind }}" = "dir" ]; then
+            find "${{ matrix.entry.path }}" -type f -print > "$listfile"
+          else
+            printf '%s\n' "${{ matrix.entry.path }}" > "$listfile"
+          fi
+          if [ ! -s "$listfile" ]; then
+            rm -f "$listfile"
+            touch "$listfile"
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "listfile=$listfile" >> "$GITHUB_OUTPUT"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+
+      - name: Run ncs-sbom for ${{ matrix.entry.name }}
+        if: steps.prep.outputs.empty == 'false'
+        working-directory: nrf
+        run: |
+          west ncs-sbom \
+            --input-list-file "${{ steps.prep.outputs.listfile }}" \
+            --license-detectors scancode-toolkit \
+            --optional-license-detectors '' \
+            --output-cache-database "sbom/chunks/${{ steps.prep.outputs.artifact }}.json" \
+            --output-html "sbom/chunks/${{ steps.prep.outputs.artifact }}.html" \
+            -n $(nproc)
+
+      - name: Create empty outputs
+        if: steps.prep.outputs.empty == 'true'
+        working-directory: nrf
+        run: |
+          printf '{"files":{}}' > "sbom/chunks/${{ steps.prep.outputs.artifact }}.json"
+          cat <<'HTML' > "sbom/chunks/${{ steps.prep.outputs.artifact }}.html"
+          <!DOCTYPE html>
+          <html lang="en"><body><p>No files detected for this entry.</p></body></html>
+          HTML
+
+      - name: Upload chunk artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ steps.prep.outputs.artifact }}
+          path: |
+            nrf/${{ steps.prep.outputs.listfile }}
+            nrf/sbom/chunks/${{ steps.prep.outputs.artifact }}.json
+            nrf/sbom/chunks/${{ steps.prep.outputs.artifact }}.html
+
+  assemble:
+    name: Assemble combined SBOM
+    needs: scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: nrfconnect/action-checkout-west-update@main
+        with:
+          path: nrf
+          git-fetch-depth: 0
+          git-ref: v3.1.0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev bzip2 xz-utils zlib1g libxml2-dev libxslt1-dev libpopt0
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.12"
+
+      - name: Install Python requirements
+        working-directory: nrf
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements-fixed.txt
+          pip install -r scripts/requirements-west-ncs-sbom.txt
+
+      - name: Download chunk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sbom-*
+          path: nrf/sbom/chunks
+          merge-multiple: false
+
+      - name: Merge cache databases
+        working-directory: nrf
+        run: |
+          python <<'PY'
+          import json
+          from pathlib import Path
+
+          cache_root = Path("sbom/chunks")
+          output = {"files": {}}
+
+          for cache_file in sorted(cache_root.rglob("*.json")):
+            data = json.loads(cache_file.read_text())
+            for rel_path, record in data.get("files", {}).items():
+              existing = output["files"].get(rel_path)
+              if existing and existing["sha1"] != record["sha1"]:
+                raise SystemExit(
+                  f"SHA1 mismatch for {rel_path}: {existing['sha1']} vs {record['sha1']}"
+                )
+              output["files"][rel_path] = record
+
+          merged_path = Path("sbom/merged-cache.json")
+          merged_path.parent.mkdir(parents=True, exist_ok=True)
+          merged_path.write_text(json.dumps(output, indent=2))
+          PY
+
+      - name: Create aggregated input list
+        working-directory: nrf
+        run: |
+          find sbom/chunks -name '*.lst' -print0 | xargs -0 cat | sed '/^$/d' | sort -u > sbom/all-files.lst
+
+      - name: Generate combined HTML report
+        working-directory: nrf
+        run: |
+          west ncs-sbom \
+            --input-list-file sbom/all-files.lst \
+            --license-detectors cache-database \
+            --optional-license-detectors '' \
+            --input-cache-database sbom/merged-cache.json \
+            --output-html sbom/nrf-full-github-sbomv310.html
+
+      - name: Upload combined SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-combined
+          path: |
+            nrf/sbom/nrf-full-github-sbomv310.html
+            nrf/sbom/merged-cache.json
+            nrf/sbom/all-files.lst

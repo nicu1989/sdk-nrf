@@ -26,14 +26,58 @@ jobs:
         id: generate
         working-directory: nrf
         run: |
-          mkdir -p sbom/chunks
-          python3 -c $'import json\nimport math\nimport os\nfrom pathlib import Path\n\nchunk_count = max(int(os.environ.get("CHUNK_COUNT", "100")), 1)\nroot = Path(".").resolve()\nignored_roots = {".git", "sbom", ".venv-ncs-sbom"}\nfiles = []\nfor path in sorted(root.rglob("*")):\n    if not path.is_file():\n        continue\n    rel = path.relative_to(root)\n    if rel.parts and rel.parts[0] in ignored_roots:\n        continue\n    files.append(path)\nchunk_dir = (Path("sbom") / "chunks").resolve()\nchunk_dir.mkdir(parents=True, exist_ok=True)\nchunk_size = math.ceil(len(files) / chunk_count) if files else 0\nfor idx in range(chunk_count):\n    if chunk_size == 0:\n        chunk_entries = []\n    else:\n        start = idx * chunk_size\n        if start >= len(files):\n            chunk_entries = []\n        else:\n            end = min(start + chunk_size, len(files))\n            chunk_entries = files[start:end]\n    listfile = chunk_dir / (f"chunk_{idx:03}.lst")\n    lines = [os.path.relpath(path, start=chunk_dir) for path in chunk_entries]\n    listfile.write_text(\"\\n\".join(lines) + (\"\\n\" if lines else \"\"))\nmatrix = json.dumps({\"chunk_index\": list(range(chunk_count))})\nwith open(os.environ[\"GITHUB_OUTPUT\"], \"a\", encoding=\"utf-8\") as fh:\n    fh.write(f\"matrix={matrix}\\n\")\n    fh.write(f\"chunk_count={chunk_count}\\n\")\n    fh.write(f\"total={len(files)}\\n\")\n'
+          set -euo pipefail
+          chunk_target="${CHUNK_COUNT:-100}"
+          case "$chunk_target" in
+            ''|*[!0-9]*)
+              chunk_target=100
+              ;;
+          esac
+          if [ "$chunk_target" -lt 1 ]; then
+            chunk_target=100
+          fi
+          chunk_dir="sbom/chunks"
+          mkdir -p "$chunk_dir"
+          rm -f "$chunk_dir"/chunk_*.lst || true
+
+          find . \
+            \( -path "./.git" -o -path "./sbom" -o -path "./.venv-ncs-sbom" \) -prune -o \
+            -type f -print \
+            | sed 's|^\./||' \
+            | sort > sbom/all-files.lst
+
+          total=$(wc -l < sbom/all-files.lst || echo 0)
+          total=${total//[[:space:]]/}
+          if [ -z "$total" ]; then
+            total=0
+          fi
+
+          if [ "$total" -eq 0 ]; then
+            chunk_count=1
+          elif [ "$total" -lt "$chunk_target" ]; then
+            chunk_count="$total"
+          else
+            chunk_count="$chunk_target"
+          fi
+
+          split -d -n l/"$chunk_count" -a 3 --additional-suffix=.lst sbom/all-files.lst "${chunk_dir}/chunk_"
+
+          unset IFS
+          actual_count=$(find "$chunk_dir" -maxdepth 1 -type f -name 'chunk_*.lst' | sort | wc -l | tr -d ' ')
+          if [ "$actual_count" -gt 0 ]; then
+            chunk_count="$actual_count"
+          fi
+
+          export CHUNK_COUNT_OUT="$chunk_count"
+          export TOTAL_FILES="$total"
+          python3 -c "import json, os; chunk_count=int(os.environ['CHUNK_COUNT_OUT']); total=int(os.environ['TOTAL_FILES']); print('matrix=' + json.dumps({'chunk_index': list(range(chunk_count))})); print(f'chunk_count={chunk_count}'); print(f'total={total}')" >> "$GITHUB_OUTPUT"
 
       - name: Upload chunk definitions
         uses: actions/upload-artifact@v4
         with:
           name: sbom-chunks
           path: |
+            nrf/sbom/all-files.lst
             nrf/sbom/chunks
 
   scan:
@@ -84,15 +128,16 @@ jobs:
           chunk_id=$(printf "%03d" "$chunk_index")
           artifact="chunk_${chunk_id}"
           listfile="sbom/chunks/${artifact}.lst"
-          if [ ! -f "$listfile" ] || [ ! -s "$listfile" ]; then
+          if [ ! -f "$listfile" ]; then
+            echo "Chunk list ${listfile} not found."
+            ls -R sbom || true
+            exit 1
+          fi
+          if [ ! -s "$listfile" ]; then
             echo "empty=true" >> "$GITHUB_OUTPUT"
-            : > "$listfile"
           else
             echo "empty=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "LISTFILE: $listfile"
-          cat "$listfile"
-          echo "ARTIFACT: $artifact"
           echo "listfile=$listfile" >> "$GITHUB_OUTPUT"
           echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
 

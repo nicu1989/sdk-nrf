@@ -1,0 +1,297 @@
+name: Parallel SBOM
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      chunk_size:
+        description: Target number of files per job (auto-increases to stay ≤200 jobs)
+        required: false
+        default: '500'
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+  SBOM_REQUIREMENTS_FILE: scripts/requirements-west-ncs-sbom.txt
+  EXTRA_REQUIREMENTS_FILE: scripts/requirements-extra.txt
+  MAX_MATRIX_JOBS: '200'
+
+jobs:
+  prepare:
+    name: Prepare matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.compute.outputs.matrix }}
+      chunk_size: ${{ steps.compute.outputs.chunk_size }}
+      chunk_count: ${{ steps.compute.outputs.chunk_count }}
+      total_files: ${{ steps.compute.outputs.total_files }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: nrf
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - id: compute
+        name: Compute workload matrix
+        env:
+          REQUESTED_CHUNK_SIZE: ${{ inputs.chunk_size }}
+        working-directory: nrf
+        run: |
+          python <<'PY'
+          import json
+          import math
+          import os
+          import subprocess
+
+          requested = os.environ.get('REQUESTED_CHUNK_SIZE', '').strip()
+          try:
+              requested_size = int(requested)
+          except ValueError:
+              requested_size = 500
+          if requested_size <= 0:
+              requested_size = 500
+
+          files = subprocess.check_output(['git', 'ls-files'], text=True).splitlines()
+          total_files = len(files)
+          max_jobs = int(os.environ['MAX_MATRIX_JOBS'])
+
+          if total_files == 0:
+              chunk_size = requested_size
+              chunk_count = 0
+          else:
+              min_chunk = max(1, math.ceil(total_files / max_jobs))
+              chunk_size = max(requested_size, min_chunk)
+              chunk_count = math.ceil(total_files / chunk_size)
+
+          matrix = {'include': [{'chunk_id': idx} for idx in range(chunk_count)]}
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as fh:
+              fh.write(f'chunk_size={chunk_size}\n')
+              fh.write(f'chunk_count={chunk_count}\n')
+              fh.write(f'total_files={total_files}\n')
+              fh.write('matrix<<EOF\n')
+              fh.write(json.dumps(matrix))
+              fh.write('\nEOF\n')
+          PY
+
+  scan:
+    name: Scan chunk ${{ matrix.chunk_id }}
+    needs: prepare
+    if: needs.prepare.outputs.chunk_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: nrf
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            nrf/${{ env.SBOM_REQUIREMENTS_FILE }}
+            nrf/${{ env.EXTRA_REQUIREMENTS_FILE }}
+
+      - name: Install OS prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev bzip2 xz-utils zlib1g libxml2-dev libxslt1-dev libpopt0
+
+      - name: Install Python dependencies
+        working-directory: nrf
+        run: |
+          python -m pip install --upgrade pip
+          WEST_PKG=$(grep -E "west==" scripts/requirements-fixed.txt | cut -f1 -d"#" | awk '{print $1}')
+          if [ -z "${WEST_PKG}" ]; then
+            echo "Unable to locate west pin in scripts/requirements-fixed.txt" >&2
+            exit 1
+          fi
+          python -m pip install "${WEST_PKG}"
+          python -m pip install -r "${SBOM_REQUIREMENTS_FILE}"
+          python -m pip install -r "${EXTRA_REQUIREMENTS_FILE}"
+
+      - name: Initialize west workspace
+        working-directory: ${{ github.workspace }}
+        run: |
+          rm -rf .west
+          west init -l nrf
+
+      - id: select
+        name: Select files for this chunk
+        working-directory: nrf
+        env:
+          CHUNK_ID: ${{ matrix.chunk_id }}
+          CHUNK_SIZE: ${{ needs.prepare.outputs.chunk_size }}
+        run: |
+          python <<'PY'
+          import os
+          import subprocess
+
+          chunk_id = int(os.environ['CHUNK_ID'])
+          chunk_size = int(os.environ['CHUNK_SIZE'])
+
+          data = subprocess.check_output(['git', 'ls-files', '-z'])
+          files = [entry for entry in data.decode().split('\0') if entry]
+
+          start = chunk_id * chunk_size
+          end = min(len(files), start + chunk_size)
+
+          if start >= len(files):
+              raise SystemExit(f'Chunk {chunk_id} starts beyond available files.')
+
+          selected = files[start:end]
+          output = f'sbom-chunk-{chunk_id}.txt'
+          with open(output, 'w', encoding='utf-8') as fp:
+              for path in selected:
+                  fp.write(f'{path}\n')
+
+          print(f'Chunk {chunk_id}: {len(selected)} files ({start} to {end - 1})')
+          PY
+
+      - name: Run ncs-sbom with scancode-toolkit only
+        working-directory: nrf
+        env:
+          CHUNK_ID: ${{ matrix.chunk_id }}
+        run: |
+          west ncs-sbom \
+            --input-list-file "sbom-chunk-${CHUNK_ID}.txt" \
+            --license-detectors scancode-toolkit \
+            --optional-license-detectors scancode-toolkit \
+            --output-cache-database "sbom-chunk-${CHUNK_ID}.json"
+
+      - name: Upload chunk cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-chunk-${{ matrix.chunk_id }}-cache
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            nrf/sbom-chunk-${{ matrix.chunk_id }}.json
+            nrf/sbom-chunk-${{ matrix.chunk_id }}.txt
+
+  aggregate:
+    name: Aggregate reports
+    needs:
+      - prepare
+      - scan
+    if: needs.prepare.outputs.chunk_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: nrf
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            nrf/${{ env.SBOM_REQUIREMENTS_FILE }}
+            nrf/${{ env.EXTRA_REQUIREMENTS_FILE }}
+
+      - name: Install OS prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev bzip2 xz-utils zlib1g libxml2-dev libxslt1-dev libpopt0
+
+      - name: Install Python dependencies
+        working-directory: nrf
+        run: |
+          python -m pip install --upgrade pip
+          WEST_PKG=$(grep -E "west==" scripts/requirements-fixed.txt | cut -f1 -d"#" | awk '{print $1}')
+          if [ -z "${WEST_PKG}" ]; then
+            echo "Unable to locate west pin in scripts/requirements-fixed.txt" >&2
+            exit 1
+          fi
+          python -m pip install "${WEST_PKG}"
+          python -m pip install -r "${SBOM_REQUIREMENTS_FILE}"
+          python -m pip install -r "${EXTRA_REQUIREMENTS_FILE}"
+
+      - name: Initialize west workspace
+        working-directory: ${{ github.workspace }}
+        run: |
+          rm -rf .west
+          west init -l nrf
+
+      - name: Download chunk caches
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sbom-chunk-*-cache
+          path: nrf/chunk-caches
+          merge-multiple: true
+
+      - id: merge
+        name: Merge cache databases
+        env:
+          EXPECTED_CHUNKS: ${{ needs.prepare.outputs.chunk_count }}
+        working-directory: nrf
+        run: |
+          python <<'PY'
+          import glob
+          import json
+          import os
+          import subprocess
+
+          expected = int(os.environ['EXPECTED_CHUNKS'])
+          cache_paths = sorted(glob.glob('chunk-caches/sbom-chunk-*.json'))
+          if len(cache_paths) != expected:
+              raise SystemExit(f'Expected {expected} cache files, found {len(cache_paths)}.')
+
+          merged = {}
+          for path in cache_paths:
+              with open(path, 'r', encoding='utf-8') as fp:
+                  data = json.load(fp)
+              for rel_path, payload in data.get('files', {}).items():
+                  if rel_path in merged:
+                      existing = merged[rel_path]
+                      if existing['sha1'] != payload['sha1']:
+                          raise SystemExit(f'Conflicting SHA1 for {rel_path}')
+                      continue
+                  merged[rel_path] = payload
+
+          with open('sbom-cache-merged.json', 'w', encoding='utf-8') as fp:
+              json.dump({'files': merged}, fp, indent=2)
+
+          input_list = subprocess.check_output(['git', 'ls-files'], text=True).splitlines()
+          with open('sbom-all-files.txt', 'w', encoding='utf-8') as fp:
+              for path in input_list:
+                  fp.write(f'{path}\n')
+          PY
+
+      - name: Generate final HTML and SPDX reports
+        working-directory: nrf
+        run: |
+          west ncs-sbom \
+            --input-list-file sbom-all-files.txt \
+            --license-detectors cache-database \
+            --optional-license-detectors cache-database \
+            --input-cache-database sbom-cache-merged.json \
+            --output-html sbom-report.html \
+            --output-spdx sbom-report.spdx
+
+      - name: Upload final artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-final-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            nrf/sbom-report.html
+            nrf/sbom-report.spdx
+            nrf/sbom-cache-merged.json

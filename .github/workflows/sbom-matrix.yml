@@ -182,7 +182,7 @@ jobs:
       - scan
     if: needs.prepare.outputs.chunk_count != '0'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: nrfconnect/action-checkout-west-update@main
@@ -194,6 +194,11 @@ jobs:
         uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
         with:
           python-version: '3.12'
+
+      - name: Install OS prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev bzip2 xz-utils zlib1g libxml2-dev libxslt1-dev libpopt0
 
       - name: Install python dependencies
         working-directory: ncs/nrf
@@ -214,6 +219,53 @@ jobs:
           pattern: sbom-chunk-*-cache
           path: ncs/nrf/chunk-caches
           merge-multiple: true
+
+      - name: Validate chunk caches
+        working-directory: ncs/nrf
+        env:
+          EXPECTED_CHUNKS: ${{ needs.prepare.outputs.chunk_count }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import pathlib
+          import subprocess
+
+          expected = int(os.environ['EXPECTED_CHUNKS'])
+          invalid = []
+
+          for idx in range(expected):
+              cache_path = pathlib.Path('chunk-caches') / f'sbom-chunk-{idx}.json'
+              if not cache_path.is_file():
+                  invalid.append((idx, 'missing cache file'))
+                  continue
+              try:
+                  with cache_path.open(encoding='utf-8') as fh:
+                      json.load(fh)
+              except Exception as exc:
+                  invalid.append((idx, str(exc)))
+
+          if not invalid:
+              print('All chunk caches are valid JSON.')
+              raise SystemExit(0)
+
+          print(f'Found {len(invalid)} chunk caches that need regeneration.')
+          for idx, reason in invalid:
+              print(f'  Regenerating chunk {idx}: {reason}')
+              list_path = pathlib.Path('chunk-caches') / f'sbom-chunk-{idx}.txt'
+              if not list_path.is_file():
+                  raise SystemExit(f'Missing input list for chunk {idx}, cannot regenerate.')
+              subprocess.run(
+                  [
+                      'west', 'ncs-sbom',
+                      '--input-list-file', str(list_path),
+                      '--license-detectors', 'scancode-toolkit',
+                      '--optional-license-detectors', 'scancode-toolkit',
+                      '--output-cache-database', str(cache_path),
+                  ],
+                  check=True,
+              )
+          PY
 
       - id: merge
         name: Merge cache databases

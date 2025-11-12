@@ -220,6 +220,61 @@ jobs:
           path: ncs/nrf/chunk-caches
           merge-multiple: true
 
+      - name: Repair invalid chunk caches if needed
+        working-directory: ncs/nrf
+        env:
+          EXPECTED_CHUNKS: ${{ needs.prepare.outputs.chunk_count }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+
+          expected = int(os.environ['EXPECTED_CHUNKS'])
+          cache_dir = pathlib.Path('chunk-caches')
+          cache_dir.mkdir(exist_ok=True)
+
+          cache_paths = sorted(cache_dir.glob('sbom-chunk-*.json'))
+          if len(cache_paths) != expected:
+              raise SystemExit(f'Expected {expected} cache files, found {len(cache_paths)}.')
+
+          invalid = []
+          pattern = re.compile(r'sbom-chunk-(\d+)\.json$')
+
+          for path in cache_paths:
+              match = pattern.search(path.name)
+              if not match:
+                  continue
+              chunk_id = int(match.group(1))
+              try:
+                  with path.open(encoding='utf-8') as fh:
+                      json.load(fh)
+              except Exception as exc:
+                  invalid.append((chunk_id, path, str(exc)))
+
+          if not invalid:
+              print('All chunk caches parsed successfully.')
+          else:
+              print(f'Found {len(invalid)} invalid chunk caches. Regenerating...')
+              for chunk_id, cache_path, reason in invalid:
+                  list_path = cache_dir / f'sbom-chunk-{chunk_id}.txt'
+                  if not list_path.is_file():
+                      raise SystemExit(f'Missing file list for chunk {chunk_id}: {list_path}')
+                  print(f'  Regenerating chunk {chunk_id}: {reason}')
+                  subprocess.run(
+                      [
+                          'west', 'ncs-sbom',
+                          '--input-list-file', str(list_path),
+                          '--license-detectors', 'scancode-toolkit',
+                          '--optional-license-detectors', 'scancode-toolkit',
+                          '--output-cache-database', str(cache_path),
+                      ],
+                      check=True,
+                  )
+          PY
+
       - id: merge
         name: Merge cache databases
         env:
@@ -239,8 +294,16 @@ jobs:
 
           merged = {}
           for path in cache_paths:
-              with open(path, 'r', encoding='utf-8') as fp:
-                  data = json.load(fp)
+              try:
+                  with open(path, 'r', encoding='utf-8') as fp:
+                      data = json.load(fp)
+              except json.JSONDecodeError as exc:
+                  with open(path, 'r', encoding='utf-8') as fp:
+                      lines = fp.readlines()
+                  start = max(exc.lineno - 3, 0)
+                  end = min(exc.lineno + 2, len(lines))
+                  snippet = ''.join(lines[start:end])
+                  raise SystemExit(f'Failed to parse {path}: {exc}\\nContext:\\n{snippet}')
               for rel_path, payload in data.get('files', {}).items():
                   if rel_path in merged:
                       existing = merged[rel_path]

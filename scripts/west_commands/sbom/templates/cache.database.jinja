@@ -1,10 +1,10 @@
 {
 	"files": {
-		{% for file in files %}
-		"{{file.file_rel_path}}": {
-			"sha1": "{{file.sha1}}",
-			"license": [{% for license in file.licenses %}"{{license}}"{{ ", " if not loop.last else "" }}{% endfor %}]
-		}{{ ", " if not loop.last else "" }}{% if not loop.last %}{% endif %}
-		{% endfor %}
+		{% for file in files -%}
+		{{ file.file_rel_path | string | tojson }}: {
+			"sha1": {{ file.sha1 | string | tojson }},
+			"license": {{ file.licenses | list | tojson }}
+		}{% if not loop.last %},{% endif %}
+		{% endfor -%}
 	}
 }

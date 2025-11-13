@@ -1,0 +1,383 @@
+name: An extended parallel SBOM
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      chunk_size:
+        description: Target number of files per job (auto-increases to stay ≤200 jobs)
+        required: false
+        default: '500'
+      target_dir:
+        description: Directory (relative to repo root) to scan ('ncs/nrf' or 'ncs')
+        required: false
+        default: 'ncs/nrf'
+      checkout_ref:
+        description: Git ref / tag / SHA to checkout (empty = current branch/PR)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  SBOM_REQUIREMENTS_FILE: scripts/requirements-west-ncs-sbom.txt
+  EXTRA_REQUIREMENTS_FILE: scripts/requirements-extra.txt
+  MAX_MATRIX_JOBS: '200'
+  TARGET_DIR: ${{ inputs.target_dir || 'ncs/nrf' }}
+  CHECKOUT_REF: ${{ inputs.checkout_ref || '' }}
+  EXCLUDE_LIST: ".git/** .west/** .vscode/** CODEOWNERS LICENSE"
+  FILE_LIST_ARTIFACT: sbom-target-files-${{ github.run_id }}
+
+jobs:
+  prepare:
+    name: Prepare matrix
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ncs/nrf
+    outputs:
+      matrix: ${{ steps.compute.outputs.matrix }}
+      chunk_size: ${{ steps.compute.outputs.chunk_size }}
+      chunk_count: ${{ steps.compute.outputs.chunk_count }}
+      total_files: ${{ steps.compute.outputs.total_files }}
+    steps:
+      - name: Checkout
+        uses: nrfconnect/action-checkout-west-update@main
+        with:
+          path: ncs/nrf
+          git-fetch-depth: 0
+          git-ref: ${{ env.CHECKOUT_REF || github.ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
+        with:
+          python-version: '3.12'
+
+      - id: compute
+        name: Compute workload matrix
+        env:
+          REQUESTED_CHUNK_SIZE: ${{ inputs.chunk_size }}
+        working-directory: ncs/nrf
+        run: |
+          python <<'PY'
+          import fnmatch
+          import json
+          import math
+          import os
+          import subprocess
+          from pathlib import Path
+
+          def resolve_scan_root():
+              workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+              target = Path(os.environ.get('TARGET_DIR', 'ncs/nrf').strip() or '.')
+              return (workspace / target).resolve()
+
+          def build_excluder():
+              patterns = [p for p in os.environ.get('EXCLUDE_LIST', '').split() if p]
+              def is_excluded(rel_path):
+                  return any(fnmatch.fnmatch(rel_path, pattern) for pattern in patterns)
+              return is_excluded
+
+          def discover_git_roots(root):
+              git_hint = root / '.git'
+              if git_hint.exists():
+                  return [root.resolve()]
+              roots = set()
+              for git_path in root.rglob('.git'):
+                  candidate = git_path.parent.resolve()
+                  try:
+                      rel = candidate.relative_to(root)
+                  except ValueError:
+                      continue
+                  if '.git' in rel.parts:
+                      continue
+                  roots.add(candidate)
+              if not roots:
+                  raise SystemExit(f'No git repositories found under {root}')
+              return sorted(roots, key=lambda path: path.relative_to(root).as_posix())
+
+          def collect_files():
+              scan_root = resolve_scan_root()
+              if not scan_root.is_dir():
+                  raise SystemExit(f'Scan directory {scan_root} does not exist.')
+              is_excluded = build_excluder()
+              files = []
+              for repo_root in discover_git_roots(scan_root):
+                  rel_repo = repo_root.relative_to(scan_root)
+                  repo_prefix = '' if str(rel_repo) == '.' else rel_repo.as_posix()
+                  output = subprocess.check_output(
+                      ['git', '-C', str(repo_root), 'ls-files'],
+                      text=True,
+                  )
+                  for entry in output.splitlines():
+                      entry = entry.strip()
+                      if not entry:
+                          continue
+                      rel_entry = entry.replace('\\', '/')
+                      rel_path = f'{repo_prefix}/{rel_entry}' if repo_prefix else rel_entry
+                      if is_excluded(rel_path):
+                          continue
+                      files.append(rel_path)
+              return sorted(files)
+
+          default = 500
+          requested = os.environ.get('REQUESTED_CHUNK_SIZE', '').strip()
+          chunk_hint = int(requested) if requested.isdigit() else default
+          chunk_hint = chunk_hint or default
+
+          files = collect_files()
+          scan_root = resolve_scan_root()
+          list_path = scan_root / 'sbom-target-files.txt'
+          with open(list_path, 'w', encoding='utf-8') as file_list:
+              file_list.write('\n'.join(files))
+          total = len(files)
+          max_jobs = int(os.environ['MAX_MATRIX_JOBS'])
+
+          if total == 0:
+              chunk_size = chunk_hint
+              chunk_count = 0
+          else:
+              chunk_size = max(chunk_hint, math.ceil(total / max_jobs))
+              chunk_count = math.ceil(total / chunk_size)
+
+          matrix = {'include': [{'chunk_id': idx} for idx in range(chunk_count)]}
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as fh:
+              fh.write(f'chunk_size={chunk_size}\n')
+              fh.write(f'chunk_count={chunk_count}\n')
+              fh.write(f'total_files={total}\n')
+              fh.write('matrix<<EOF\n')
+              fh.write(json.dumps(matrix))
+              fh.write('\nEOF\n')
+          PY
+
+      - name: Upload file list
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_LIST_ARTIFACT }}
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ env.TARGET_DIR }}/sbom-target-files.txt
+
+  scan:
+    name: Scan chunk ${{ matrix.chunk_id }}
+    needs: prepare
+    if: needs.prepare.outputs.chunk_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: nrfconnect/action-checkout-west-update@main
+        with:
+          path: ncs/nrf
+          git-fetch-depth: 0
+          git-ref: ${{ env.CHECKOUT_REF || github.ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install python dependencies
+        working-directory: ncs/nrf
+        run: |
+          pip3 install -U mypy types-colorama types-editdistance types-PyYAML
+          grep -E "west==" scripts/requirements-fixed.txt | cut -f1 -d"#" | cut -d ' ' -f '1'| xargs pip3 install -U
+          pip3 show -f west
+
+      - name: Install requirements
+        shell: bash
+        working-directory: ncs/nrf
+        run: |
+          pip3 install -r scripts/requirements-west-ncs-sbom.txt
+
+      - name: Download file list
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FILE_LIST_ARTIFACT }}
+          path: ${{ env.TARGET_DIR }}
+
+      - id: select
+        name: Select files for this chunk
+        working-directory: ncs/nrf
+        env:
+          CHUNK_ID: ${{ matrix.chunk_id }}
+          CHUNK_SIZE: ${{ needs.prepare.outputs.chunk_size }}
+        run: |
+          python <<'PY'
+          from pathlib import Path
+          import os
+
+          chunk_id = int(os.environ['CHUNK_ID'])
+          chunk_size = int(os.environ['CHUNK_SIZE'])
+          workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          target = Path(os.environ.get('TARGET_DIR', 'ncs/nrf').strip() or '.')
+          scan_root = (workspace / target).resolve()
+          list_path = scan_root / 'sbom-target-files.txt'
+
+          if not list_path.is_file():
+              raise SystemExit(f'File list not found at {list_path}')
+
+          with open(list_path, 'r', encoding='utf-8') as fp:
+              files = [line.strip() for line in fp if line.strip()]
+
+          start = chunk_id * chunk_size
+          end = start + chunk_size
+          selection = files[start:end]
+          if not selection:
+              raise SystemExit(f'Chunk {chunk_id} has no files (start={start}).')
+
+          out_path = scan_root / f'sbom-chunk-{chunk_id}.txt'
+          with open(out_path, 'w', encoding='utf-8') as fp:
+              fp.write('\n'.join(selection))
+
+          print(f'Chunk {chunk_id}: wrote {len(selection)} files from {start} to {end - 1}')
+          PY
+
+      - name: Run ncs-sbom with scancode-toolkit only
+        working-directory: ${{ env.TARGET_DIR }}
+        env:
+          CHUNK_ID: ${{ matrix.chunk_id }}
+        run: |
+          west ncs-sbom \
+            --input-list-file "sbom-chunk-${CHUNK_ID}.txt" \
+            --license-detectors scancode-toolkit \
+            --optional-license-detectors scancode-toolkit \
+            --output-cache-database "sbom-chunk-${CHUNK_ID}.json"
+
+      - name: Upload chunk cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-chunk-${{ matrix.chunk_id }}-cache
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ env.TARGET_DIR }}/sbom-chunk-${{ matrix.chunk_id }}.json
+            ${{ env.TARGET_DIR }}/sbom-chunk-${{ matrix.chunk_id }}.txt
+
+  aggregate:
+    name: Aggregate reports
+    needs:
+      - prepare
+      - scan
+    if: needs.prepare.outputs.chunk_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: nrfconnect/action-checkout-west-update@main
+        with:
+          path: ncs/nrf
+          git-fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install OS prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev bzip2 xz-utils zlib1g libxml2-dev libxslt1-dev libpopt0
+
+      - name: Install python dependencies
+        working-directory: ncs/nrf
+        run: |
+          pip3 install -U mypy types-colorama types-editdistance types-PyYAML
+          grep -E "west==" scripts/requirements-fixed.txt | cut -f1 -d"#" | cut -d ' ' -f '1'| xargs pip3 install -U
+          pip3 show -f west
+
+      - name: Install requirements
+        shell: bash
+        working-directory: ncs/nrf
+        run: |
+          pip3 install -r scripts/requirements-west-ncs-sbom.txt  
+
+      - name: Download file list
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FILE_LIST_ARTIFACT }}
+          path: ${{ env.TARGET_DIR }}
+
+      - name: Download chunk caches
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sbom-chunk-*-cache
+          path: ${{ env.TARGET_DIR }}/chunk-caches
+          merge-multiple: true
+
+      - id: merge
+        name: Merge cache databases
+        env:
+          EXPECTED_CHUNKS: ${{ needs.prepare.outputs.chunk_count }}
+        working-directory: ncs/nrf
+        run: |
+          python <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def resolve_scan_root():
+              workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+              target = Path(os.environ.get('TARGET_DIR', 'ncs/nrf').strip() or '.')
+              return (workspace / target).resolve()
+
+          expected = int(os.environ['EXPECTED_CHUNKS'])
+          scan_root = resolve_scan_root()
+          if not scan_root.is_dir():
+              raise SystemExit(f'Scan directory {scan_root} does not exist.')
+          cache_dir = scan_root / 'chunk-caches'
+          cache_paths = sorted(cache_dir.glob('sbom-chunk-*.json'))
+          if len(cache_paths) != expected:
+              raise SystemExit(f'Expected {expected} cache files, found {len(cache_paths)}.')
+
+          merged = {}
+          for path in cache_paths:
+              with open(path, 'r', encoding='utf-8') as fp:
+                  data = json.load(fp)
+              for rel_path, payload in data.get('files', {}).items():
+                  if rel_path in merged and merged[rel_path]['sha1'] != payload['sha1']:
+                      raise SystemExit(f'Conflicting SHA1 for {rel_path}')
+                  merged[rel_path] = payload
+
+          merged_path = scan_root / 'sbom-cache-merged.json'
+          with open(merged_path, 'w', encoding='utf-8') as fp:
+              json.dump({'files': merged}, fp, indent=2)
+
+          list_src = scan_root / 'sbom-target-files.txt'
+          if not list_src.is_file():
+              raise SystemExit(f'File list not found at {list_src}')
+          list_dst = scan_root / 'sbom-all-files.txt'
+          with open(list_src, 'r', encoding='utf-8') as src, open(list_dst, 'w', encoding='utf-8') as dst:
+              for line in src:
+                  entry = line.strip()
+                  if entry:
+                      dst.write(f'{entry}\n')
+          PY
+
+      - name: Generate final HTML and SPDX reports
+        working-directory: ${{ env.TARGET_DIR }}
+        run: |
+          west ncs-sbom \
+            --input-list-file sbom-all-files.txt \
+            --license-detectors cache-database \
+            --optional-license-detectors cache-database \
+            --input-cache-database sbom-cache-merged.json \
+            --output-html sbom-report.html \
+            --output-spdx sbom-report.spdx
+
+      - name: Upload final artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-final-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ env.TARGET_DIR }}/sbom-report.html
+            ${{ env.TARGET_DIR }}/sbom-report.spdx
+            ${{ env.TARGET_DIR }}/sbom-cache-merged.json

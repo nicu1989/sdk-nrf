@@ -138,7 +138,7 @@ Security
     :kconfig:option:`CONFIG_TFM_PARTITION_CRYPTO` with Trusted Firmware-M (TF-M) through the
     :kconfig:option:`CONFIG_TFM_PARTITION_INTERNAL_TRUSTED_STORAGE` Kconfig option.
 
-  * Support for AES in counter mode using CRACEN for the :zephyr:board:`nrf54lm20dk`.
+  * Support for AES in counter mode and CBC mode using CRACEN for the :zephyr:board:`nrf54lm20dk`.
 
 * Updated:
 
@@ -162,6 +162,9 @@ Trusted Firmware-M
   * Documentation to clarify the support for TF-M on devices emulated using the nRF54L15 DK.
     nRF54L05 does not support TF-M.
     nRF54L10 supports TF-M experimentally.
+
+* Removed several documentation pages from the :ref:`tfm_wrapper` section that were misleading or not relevant for understanding the TF-M integration in the |NCS|.
+  The section now includes only pages that provide background information about TF-M design that are relevant for the |NCS|.
 
 Protocols
 =========
@@ -333,6 +336,8 @@ nRF Desktop
       The Kconfig option value was increased to ``15`` (default value from Zephyr).
       The priority of ``10`` is used by default for preemptive contexts (for example, :kconfig:option:`CONFIG_BT_GATT_DM_WORKQ_PRIO` and :kconfig:option:`CONFIG_BT_LONG_WQ_PRIO`).
       The previously used Kconfig option value of ``11`` leads to using the same priority for the mentioned preemptive contexts as the lowest available application thread priority (used for example, by the log processing thread).
+    * Application image configurations to explicitly specify the LED driver used by the :ref:`nrf_desktop_leds` (:kconfig:option:`CONFIG_CAF_LEDS_GPIO` or :kconfig:option:`CONFIG_CAF_LEDS_PWM`).
+      Also, disabled unused LED drivers enabled by default to reduce memory footprint.
 
 nRF Machine Learning (Edge Impulse)
 -----------------------------------
@@ -393,7 +398,7 @@ Bluetooth Mesh samples
 
 * Added:
 
-  * Support for external flash settings for the ``nrf52840dk/nrf52840`` board targets in all Bluetooth Mesh samples.
+  * Support for external flash settings for the ``nrf52840dk/nrf52840``, ``nrf54l15dk/nrf54l15/cpuapp``, ``nrf54l15dk/nrf54l10/cpuapp``, and ``nrf54l15dk/nrf54l05/cpuapp`` board targets in all Bluetooth Mesh samples.
   * Support for the ``nrf54lm20dk/nrf54lm20a/cpuapp`` board target in all Bluetooth Mesh samples.
 
 * :ref:`ble_mesh_dfu_distributor` sample:
@@ -401,20 +406,12 @@ Bluetooth Mesh samples
    * Added:
 
     * Support for external flash memory for the ``nrf52840dk/nrf52840`` and the ``nrf54l15dk/nrf54l15/cpuapp`` as the secondary partition for the DFU process.
-    * Support for external flash settings for the ``nrf52840dk/nrf52840`` board targets.
-
-  * Updated the :makevar:`FILE_SUFFIX` make variable to use more descriptive suffixes for external flash configurations.
-    The new suffixes are ``_dfu_ext_flash`` for external flash DFU storage and ``_ext_flash_settings`` for external flash settings storage.
 
 * :ref:`ble_mesh_dfu_target` sample:
 
   * Added:
 
     * Support for external flash memory for the ``nrf52840dk/nrf52840`` and the ``nrf54l15dk/nrf54l15/cpuapp`` as the secondary partition for the DFU process.
-    * Support for external flash settings for the ``nrf52840dk/nrf52840`` board targets.
-
-  * Updated the :makevar:`FILE_SUFFIX` make variable to use more descriptive suffixes for external flash configurations.
-    The new suffixes are ``_dfu_ext_flash`` for external flash DFU storage and ``_ext_flash_settings`` for external flash settings storage.
 
 * :ref:`bluetooth_mesh_sensor_client` sample:
 
@@ -536,6 +533,18 @@ Cryptography samples
 
   * Updated sample-specific Kconfig configuration structure and documentation.
 
+* :ref:`crypto_aes_ctr` sample:
+
+  * Added support for ``nrf54lm20dk/nrf54lm20a/cpuapp`` board target.
+
+* :ref:`crypto_aes_cbc` sample:
+
+  * Added support for ``nrf54lm20dk/nrf54lm20a/cpuapp`` board target.
+
+* :ref:`crypto_persistent_key` sample:
+
+  * Added support for the ``nrf54h20dk/nrf54h20/cpuapp`` board target, demonstrating use of Internal Trusted Storage (ITS) on the nRF54H20 DK.
+
 Debug samples
 -------------
 
@@ -544,7 +553,17 @@ Debug samples
 DECT NR+ samples
 ----------------
 
-|no_changes_yet_note|
+* :ref:`dect_shell_application` sample:
+
+  * Added:
+
+    * ``dect perf`` command client: LBT (Listen Before Talk) support with configurable LBT period and busy threshold.
+
+  * Updated:
+
+    * PCC and PDC printings improved to show SNR and RSSI-2 values with actual dB/dBm resolutions.
+    * ``dect perf`` command: improved operation schedulings to avoid scheduling conflicts and fix to TX the results in server side.
+    * ``dect ping`` command: improved operation schedulings to avoid scheduling conflicts.
 
 DFU samples
 -----------
@@ -791,6 +810,8 @@ Modem libraries
     * Replaced modem events ``LTE_LC_MODEM_EVT_CE_LEVEL_0``, ``LTE_LC_MODEM_EVT_CE_LEVEL_1``, ``LTE_LC_MODEM_EVT_CE_LEVEL_2`` and ``LTE_LC_MODEM_EVT_CE_LEVEL_3`` with the :c:enumerator:`LTE_LC_MODEM_EVT_CE_LEVEL` modem event.
     * The order of the ``LTE_LC_MODEM_EVT_SEARCH_DONE`` modem event, and registration and cell related events.
       See the :ref:`migration guide <migration_3.2_required>` for more information.
+
+  * Fixed an issue where band lock, RAI notification subscription, and DNS fallback address were lost when the modem was put into :c:enumerator:`LTE_LC_FUNC_MODE_POWER_OFF` functional mode.
 
 * :ref:`nrf_modem_lib_readme` library:
 

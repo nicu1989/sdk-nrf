@@ -371,6 +371,20 @@ static int sys_init_helper(void)
 extern void on_modem_init(int err, void *ctx);
 extern void lte_lc_on_modem_cfun(int mode, void *ctx);
 
+void enable_notifications(void)
+{
+	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", EXIT_SUCCESS);
+	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", EXIT_SUCCESS);
+	if (IS_ENABLED(CONFIG_LTE_LC_MODEM_SLEEP_NOTIFICATIONS)) {
+		__mock_nrf_modem_at_printf_ExpectAndReturn("AT%XMODEMSLEEP=1,5000,1200000",
+							   EXIT_SUCCESS);
+	}
+	if (IS_ENABLED(CONFIG_LTE_LC_TAU_PRE_WARNING_NOTIFICATIONS)) {
+		__mock_nrf_modem_at_printf_ExpectAndReturn("AT%XT3412=1,5000,1200000",
+							   EXIT_SUCCESS);
+	}
+}
+
 /* Helper function to initialize LTE LC with the given firmware version. */
 void lte_lc_on_modem_init_with_firmware(const char *cgmr_resp, uint16_t cgmr_resp_len)
 {
@@ -416,7 +430,7 @@ void test_lte_lc_on_modem_init_error_fail(void)
 	on_modem_init(-NRF_EFAULT, NULL);
 }
 
-void test_lte_lc_on_modem_init_system_mode_set_fail(void)
+void test_lte_lc_on_modem_init_all_fails(void)
 {
 	/* Read modem firmware type. */
 	__cmock_nrf_modem_at_cmd_ExpectAndReturn(NULL, 0, "AT+CGMR", 0);
@@ -427,79 +441,23 @@ void test_lte_lc_on_modem_init_system_mode_set_fail(void)
 		sizeof(cgmr_resp_unknown));
 	/* lte_lc_system_mode_set() */
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%XSYSTEMMODE=1,1,1,3", -NRF_EFAULT);
-
-	on_modem_init(0, NULL);
-}
-
-void test_lte_lc_on_modem_init_psm_req_fail(void)
-{
-	/* Read modem firmware type. */
-	__cmock_nrf_modem_at_cmd_ExpectAndReturn(NULL, 0, "AT+CGMR", 0);
-	__cmock_nrf_modem_at_cmd_IgnoreArg_buf();
-	__cmock_nrf_modem_at_cmd_IgnoreArg_len();
-	__cmock_nrf_modem_at_cmd_ReturnArrayThruPtr_buf(
-		(char *)cgmr_resp_unknown,
-		sizeof(cgmr_resp_unknown));
-	/* lte_lc_system_mode_set() */
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%XSYSTEMMODE=1,1,1,3", EXIT_SUCCESS);
 	/* lte_lc_psm_req(false) */
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CPSMS=", -NRF_EFAULT);
-
-	on_modem_init(0, NULL);
-}
-
-void test_lte_lc_on_modem_init_edrx_req_fail(void)
-{
-	/* Read modem firmware type. */
-	__cmock_nrf_modem_at_cmd_ExpectAndReturn(NULL, 0, "AT+CGMR", 0);
-	__cmock_nrf_modem_at_cmd_IgnoreArg_buf();
-	__cmock_nrf_modem_at_cmd_IgnoreArg_len();
-	__cmock_nrf_modem_at_cmd_ReturnArrayThruPtr_buf(
-		(char *)cgmr_resp_unknown,
-		sizeof(cgmr_resp_unknown));
-	/* lte_lc_system_mode_set() */
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%XSYSTEMMODE=1,1,1,3", EXIT_SUCCESS);
-	/* lte_lc_psm_req(false) */
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CPSMS=", EXIT_SUCCESS);
 	/* lte_lc_proprietary_psm_req() */
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%FEACONF=0,0,0", -NRF_EFAULT);
 	/* CONFIG_LTE_PLMN_SELECTION_OPTIMIZATION=y */
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%FEACONF=0,3,1", -NRF_EFAULT);
 	/* lte_lc_edrx_req(false) */
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEDRXS=3", -NRF_EFAULT);
-
-	on_modem_init(0, NULL);
-}
-
-void test_lte_lc_on_modem_init_rai_fail(void)
-{
-	/* Read modem firmware type. */
-	__cmock_nrf_modem_at_cmd_ExpectAndReturn(NULL, 0, "AT+CGMR", 0);
-	__cmock_nrf_modem_at_cmd_IgnoreArg_buf();
-	__cmock_nrf_modem_at_cmd_IgnoreArg_len();
-	__cmock_nrf_modem_at_cmd_ReturnArrayThruPtr_buf(
-		(char *)cgmr_resp_unknown,
-		sizeof(cgmr_resp_unknown));
-	/* lte_lc_system_mode_set() */
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%XSYSTEMMODE=1,1,1,3", EXIT_SUCCESS);
-	/* lte_lc_psm_req(false) */
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CPSMS=", EXIT_SUCCESS);
-	/* lte_lc_proprietary_psm_req() */
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%FEACONF=0,0,0", EXIT_SUCCESS);
-	/* CONFIG_LTE_PLMN_SELECTION_OPTIMIZATION=y */
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%FEACONF=0,3,1", EXIT_SUCCESS);
-	/* lte_lc_edrx_req(false) */
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEDRXS=3", EXIT_SUCCESS);
 	/* CONFIG_LTE_RAI_REQ=n */
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%RAI=0", -NRF_EFAULT);
 	/* CONFIG_LTE_LC_DNS_FALLBACK_MODULE */
-	/* Let's check that IPv4 works */
-	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET, IGNORE, IGNORE, 1 /* success */);
+	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET, IGNORE, IGNORE, 0 /* error */);
 	__cmock_nrf_inet_pton_IgnoreArg_src();
 	__cmock_nrf_inet_pton_IgnoreArg_dst();
-	__cmock_nrf_setdnsaddr_ExpectAndReturn(NRF_AF_INET, IGNORE, sizeof(struct nrf_in_addr),
-					       EXIT_SUCCESS);
-	__cmock_nrf_setdnsaddr_IgnoreArg_in_addr();
+	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET6, IGNORE, IGNORE, 0 /* error */);
+	__cmock_nrf_inet_pton_IgnoreArg_src();
+	__cmock_nrf_inet_pton_IgnoreArg_dst();
 
 	on_modem_init(0, NULL);
 }
@@ -526,13 +484,13 @@ void test_lte_lc_on_modem_init_dns_fail(void)
 	/* CONFIG_LTE_RAI_REQ=n */
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%RAI=0", EXIT_SUCCESS);
 	/* CONFIG_LTE_LC_DNS_FALLBACK_MODULE */
-	/* DNS address is not valid IPv4 nor IPv6 address */
-	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET, IGNORE, IGNORE, 0 /* error */);
+	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET, IGNORE, IGNORE, 1 /* success */);
 	__cmock_nrf_inet_pton_IgnoreArg_src();
 	__cmock_nrf_inet_pton_IgnoreArg_dst();
-	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET6, IGNORE, IGNORE, 0 /* error */);
-	__cmock_nrf_inet_pton_IgnoreArg_src();
-	__cmock_nrf_inet_pton_IgnoreArg_dst();
+	/* Setting IPv4 DNS address fails */
+	__cmock_nrf_setdnsaddr_ExpectAndReturn(NRF_AF_INET, IGNORE, sizeof(struct nrf_in_addr),
+					       -1);
+	__cmock_nrf_setdnsaddr_IgnoreArg_in_addr();
 
 	on_modem_init(0, NULL);
 
@@ -556,11 +514,14 @@ void test_lte_lc_on_modem_init_dns_fail(void)
 	/* CONFIG_LTE_RAI_REQ=n */
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%RAI=0", EXIT_SUCCESS);
 	/* CONFIG_LTE_LC_DNS_FALLBACK_MODULE */
-	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET, IGNORE, IGNORE, 1 /* success */);
+	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET, IGNORE, IGNORE, 0 /* error */);
 	__cmock_nrf_inet_pton_IgnoreArg_src();
 	__cmock_nrf_inet_pton_IgnoreArg_dst();
-	/* Setting DNS address fails */
-	__cmock_nrf_setdnsaddr_ExpectAndReturn(NRF_AF_INET, IGNORE, sizeof(struct nrf_in_addr),
+	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET6, IGNORE, IGNORE, 1 /* success */);
+	__cmock_nrf_inet_pton_IgnoreArg_src();
+	__cmock_nrf_inet_pton_IgnoreArg_dst();
+	/* Setting IPv6 DNS address fails */
+	__cmock_nrf_setdnsaddr_ExpectAndReturn(NRF_AF_INET6, IGNORE, sizeof(struct nrf_in6_addr),
 					       -1);
 	__cmock_nrf_setdnsaddr_IgnoreArg_in_addr();
 
@@ -609,8 +570,7 @@ void test_lte_lc_connect_success(void)
 	__mock_nrf_modem_at_scanf_ExpectAndReturn("AT+CFUN?", "+CFUN: %hu", 1);
 	__mock_nrf_modem_at_scanf_ReturnVarg_uint16(LTE_LC_FUNC_MODE_OFFLINE);
 
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", 0);
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", 0);
+	enable_notifications();
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=1", 0);
 
 	/* AT commands triggered by lte_lc_offline() */
@@ -696,8 +656,7 @@ void test_lte_lc_connect_timeout_fail(void)
 	__mock_nrf_modem_at_scanf_ExpectAndReturn("AT+CFUN?", "+CFUN: %hu", 1);
 	__mock_nrf_modem_at_scanf_ReturnVarg_uint16(LTE_LC_FUNC_MODE_POWER_OFF);
 
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", 0);
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", 0);
+	enable_notifications();
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=1", 0);
 
 	/* Modem switched back to original functional mode after the timeout */
@@ -750,8 +709,7 @@ void test_lte_lc_connect_cfun_normal_set_fail(void)
 	__mock_nrf_modem_at_scanf_ExpectAndReturn("AT+CFUN?", "+CFUN: %hu", 1);
 	__mock_nrf_modem_at_scanf_ReturnVarg_uint16(LTE_LC_FUNC_MODE_POWER_OFF);
 
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", 0);
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", 0);
+	enable_notifications();
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=1", -NRF_ENOMEM);
 
 	ret = lte_lc_connect();
@@ -770,8 +728,7 @@ void test_lte_lc_connect_async_success(void)
 	__mock_nrf_modem_at_scanf_ExpectAndReturn("AT+CFUN?", "+CFUN: %hu", 1);
 	__mock_nrf_modem_at_scanf_ReturnVarg_uint16(LTE_LC_FUNC_MODE_OFFLINE);
 
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", 0);
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", 0);
+	enable_notifications();
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=1", 0);
 
 	/* AT commands triggered by lte_lc_offline() */
@@ -842,8 +799,7 @@ void test_lte_lc_normal_success(void)
 {
 	int ret;
 
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", EXIT_SUCCESS);
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", EXIT_SUCCESS);
+	enable_notifications();
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=1", EXIT_SUCCESS);
 	ret = lte_lc_normal();
 	TEST_ASSERT_EQUAL(EXIT_SUCCESS, ret);
@@ -874,8 +830,7 @@ void test_lte_lc_normal_cfun_fail(void)
 {
 	int ret;
 
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", EXIT_SUCCESS);
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", EXIT_SUCCESS);
+	enable_notifications();
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=1", -NRF_ENOMEM);
 	ret = lte_lc_normal();
 	TEST_ASSERT_EQUAL(-EFAULT, ret);
@@ -921,12 +876,10 @@ void test_lte_lc_rx_only(void)
 {
 	int ret;
 
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", 0);
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", 0);
+	enable_notifications();
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=2", 0);
 
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", 0);
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", 0);
+	enable_notifications();
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=1", 0);
 
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=4", 0);
@@ -1475,8 +1428,18 @@ void test_lte_lc_edrx_req_disable_success(void)
 	at_monitor_dispatch(at_notif);
 	k_sleep(K_MSEC(1));
 
-	/* CFUN callback causes no actions because eDRX is not requested */
-	lte_lc_edrx_on_modem_cfun(LTE_LC_FUNC_MODE_POWER_OFF, NULL);
+	/* eDRX is disabled, so no AT command expected for it on +CFUN=0. */
+	/* CONFIG_LTE_RAI_REQ=n */
+	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%RAI=0", EXIT_SUCCESS);
+	/* CONFIG_LTE_LC_DNS_FALLBACK_MODULE */
+	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET, IGNORE, IGNORE, 1 /* success */);
+	__cmock_nrf_inet_pton_IgnoreArg_src();
+	__cmock_nrf_inet_pton_IgnoreArg_dst();
+	__cmock_nrf_setdnsaddr_ExpectAndReturn(NRF_AF_INET, IGNORE, sizeof(struct nrf_in_addr),
+					       EXIT_SUCCESS);
+	__cmock_nrf_setdnsaddr_IgnoreArg_in_addr();
+
+	lte_lc_on_modem_cfun(LTE_LC_FUNC_MODE_POWER_OFF, NULL);
 	k_sleep(K_MSEC(1));
 }
 
@@ -1707,11 +1670,21 @@ void test_lte_lc_edrx_on_modem_cfun(void)
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEDRXS=2,6,\"0100\"", EXIT_SUCCESS);
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEDRXS=2,4,\"0010\"", EXIT_SUCCESS);
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEDRXS=2,5,\"0100\"", EXIT_SUCCESS);
-	lte_lc_edrx_on_modem_cfun(LTE_LC_FUNC_MODE_POWER_OFF, NULL);
+	/* CONFIG_LTE_RAI_REQ=n */
+	__mock_nrf_modem_at_printf_ExpectAndReturn("AT%RAI=0", EXIT_SUCCESS);
+	/* CONFIG_LTE_LC_DNS_FALLBACK_MODULE */
+	__cmock_nrf_inet_pton_ExpectAndReturn(NRF_AF_INET, IGNORE, IGNORE, 1 /* success */);
+	__cmock_nrf_inet_pton_IgnoreArg_src();
+	__cmock_nrf_inet_pton_IgnoreArg_dst();
+	__cmock_nrf_setdnsaddr_ExpectAndReturn(NRF_AF_INET, IGNORE, sizeof(struct nrf_in_addr),
+					       EXIT_SUCCESS);
+	__cmock_nrf_setdnsaddr_IgnoreArg_in_addr();
+
+	lte_lc_on_modem_cfun(LTE_LC_FUNC_MODE_POWER_OFF, NULL);
 	k_sleep(K_MSEC(1));
 
 	/* Other modes than offline doesn't cause actions */
-	lte_lc_edrx_on_modem_cfun(LTE_LC_FUNC_MODE_NORMAL, NULL);
+	lte_lc_on_modem_cfun(LTE_LC_FUNC_MODE_NORMAL, NULL);
 	k_sleep(K_MSEC(1));
 }
 
@@ -2156,14 +2129,12 @@ void test_lte_lc_func_mode_set_all_modes(void)
 	int ret;
 	char at_cmd[12];
 
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", EXIT_SUCCESS);
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", EXIT_SUCCESS);
+	enable_notifications();
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=2", EXIT_SUCCESS);
 	ret = lte_lc_func_mode_set(LTE_LC_FUNC_MODE_RX_ONLY);
 	TEST_ASSERT_EQUAL(EXIT_SUCCESS, ret);
 
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CEREG=5", EXIT_SUCCESS);
-	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CSCON=1", EXIT_SUCCESS);
+	enable_notifications();
 	__mock_nrf_modem_at_printf_ExpectAndReturn("AT+CFUN=21", EXIT_SUCCESS);
 	ret = lte_lc_func_mode_set(LTE_LC_FUNC_MODE_ACTIVATE_LTE);
 	TEST_ASSERT_EQUAL(EXIT_SUCCESS, ret);

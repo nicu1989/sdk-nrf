@@ -64,7 +64,7 @@ manifest:
     # https://developer.nordicsemi.com/nRF_Connect_SDK/doc/latest/zephyr/guides/modules.html
     - name: zephyr
       repo-path: sdk-zephyr
-      revision: 164b47d3094202c9ac5b756aa2648d2ce5822680
+      revision: 895decea58da060a2cc786b18872b0ff2bc20bfd
       import:
         # In addition to the zephyr repository itself, NCS also
         # imports the contents of zephyr/west.yml at the above
@@ -126,7 +126,7 @@ manifest:
           compare-by-default: true
     - name: mcuboot
       repo-path: sdk-mcuboot
-      revision: 459288d6a13cede9fa09e314b21a979a6cc6e3f2
+      revision: 3839107e52c7228eba123129a3806fb3391781d6
       path: bootloader/mcuboot
     - name: qcbor
       url: https://github.com/laurencelundblade/QCBOR
@@ -139,11 +139,11 @@ manifest:
     - name: oberon-psa-crypto
       path: modules/crypto/oberon-psa-crypto
       repo-path: sdk-oberon-psa-crypto
-      revision: c79b47bcf201b543c20c74dafb32194e3ccc9677
+      revision: ee0cdb000b9ce3c699193a15312058c62e5afa57
     - name: nrfxlib
       repo-path: sdk-nrfxlib
       path: nrfxlib
-      revision: 978e42a98059347786975aba97e73aea9bf63438
+      revision: 994e3c6bc9530a5b59ccb29b6a4249cdbd7593b8
     - name: trusted-firmware-m
       repo-path: sdk-trusted-firmware-m
       path: modules/tee/tf-m/trusted-firmware-m
@@ -155,7 +155,7 @@ manifest:
     - name: matter
       repo-path: sdk-connectedhomeip
       path: modules/lib/matter
-      revision: 17cd1632c8683e5dfeee817b7767d4b8a1d470e6
+      revision: a85100a3737728de6270845a314ddb318deebd5c
       west-commands: scripts/west/west-commands.yml
       submodules:
         - name: nlio
@@ -174,14 +174,14 @@ manifest:
     - name: nrf-802154
       repo-path: sdk-nrf-802154
       path: nrf-802154
-      revision: 68bee073028691c3353b4a15bd5207e51c6c4dd1
+      revision: 570c562e938d6ce6fd0ffa1e5d438c4b5ce4b05a
       groups:
         - nrf-802154
     - name: dragoon
       # Only for internal Nordic development
       repo-path: dragoon.git
       remote: dragoon
-      revision: 9ddc12f9d0015e7eaf5b84594512694e5edc0b2f
+      revision: 125b7fabc037afbe250e904bd46bc91a80ef3100
       groups:
         - dragoon
     - name: cjson

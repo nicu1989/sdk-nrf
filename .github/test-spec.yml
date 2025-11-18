@@ -79,7 +79,7 @@
   - "lib/sms/**/*"
   - "samples/cellular/at_client/**/*"
   - "samples/cellular/at_monitor/**/*"
-  - "samples/cellular/ciphersuites/**/*"
+  - "samples/cellular/tls_ciphersuites/**/*"
   - "samples/net/coap_client/**/*"
   - "samples/net/download/**/*"
   - "samples/cellular/http_update/**/*"
@@ -117,7 +117,6 @@
   - "include/fw_info.*"
   - "include/mgmt/*"
   - "include/net/**/*"
-  - "include/sdfw/sdfw_services/*"
   - "lib/dk_buttons_and_leds/**/*"
   - "lib/lte_link_control/**/*"
   - "modules/mcuboot/**/*"
@@ -144,7 +143,6 @@
   - "subsys/nrf_security/**/*"
   - "subsys/partition_manager/*"
   - "subsys/pcd/*"
-  - "subsys/sdfw_services/**/*"
 
 "CI-boot-test":
   - "include/bl*"
@@ -580,7 +578,7 @@
   - "samples/zephyr/sensor/qdec/**/*"
   - "samples/zephyr/subsys/settings/**/*"
   - "snippets/hpf/**/*"
-  - "snippets/nrf54l09-switch-uart/**/*"
+  - "snippets/nordic-flpr/**/*"
   - "soc/nordic/nrf54l/**/*"
   - "soc/nordic/nrf71/**/*"
   - "tests/benchmarks/multicore/idle/**/*"

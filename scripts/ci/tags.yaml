@@ -154,6 +154,7 @@ ci_samples_wifi:
     - nrf/subsys/net/lib/hostap_crypto/
     - nrf/subsys/net/lib/nrf70_fw_ext/
     - nrf/subsys/net/openthread/
+    - nrf/subsys/nrf_security/
     - nrfxlib/nrf_wifi/
     - zephyr/drivers/wifi/
     - zephyr/modules/hostap/
@@ -170,6 +171,7 @@ ci_applications_matter: &ci_matter
     - nrf/applications/ipc_radio/
     - nrf/applications/matter_bridge/
     - nrf/applications/matter_weather_station/
+    - nrf/boards/shields/nrf7002eb2/
     - nrf/cmake/
     - nrf/drivers/hw_cc3xx/
     - nrf/drivers/mpsl/
@@ -855,11 +857,6 @@ ci_tests_subsys_pcd:
     - nrf/subsys/pcd/
     - nrf/tests/subsys/pcd/
 
-ci_tests_subsys_sdfw_services:
-  files:
-    - nrf/subsys/sdfw_services/
-    - nrf/tests/subsys/sdfw_services/
-
 ci_tests_subsys_event_manager_proxy:
   files:
     - modules/lib/open-amp/
@@ -887,6 +884,11 @@ ci_tests_subsys_bluetooth_controller:
   files:
     - nrf/subsys/bluetooth/controller/
     - nrf/tests/subsys/bluetooth/controller/
+
+ci_tests_subsys_bluetooth_cs_de:
+  files:
+    - nrf/subsys/bluetooth/cs_de/
+    - nrf/tests/subsys/bluetooth/cs_de/
 
 ci_tests_subsys_mpsl:
   files:
@@ -1238,6 +1240,7 @@ ci_tests_benchmarks_current_consumption:
     - nrf/include/nfc/
     - nrf/subsys/nfc/
     - nrf/tests/benchmarks/current_consumption/
+    - nrf/tests/benchmarks/pm_states/
     - nrf/tests/benchmarks/power_consumption/
     - nrfxlib/nfc/
     - zephyr/boards/nordic/

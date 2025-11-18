@@ -75,6 +75,14 @@ config MBEDTLS_X509_REMOVE_INFO
 	  Disable mbedtls_x509_*_info() and related APIs.
 	  This can save several KB
 
+config MBEDTLS_PKCS7_C
+	bool "PKCS#7 core support [EXPERIMENTAL]"
+	select EXPERIMENTAL
+	help
+	  Add support for PKCS #7-formatted signatures.
+	  See https://tools.ietf.org/html/rfc2315 for details.
+	  This feature is currently experimental.
+
 endif
 
 menuconfig MBEDTLS_TLS_LIBRARY
@@ -150,9 +158,6 @@ config MBEDTLS_SSL_COOKIE_C
 	  This setting enables TLS server-side callbacks for session tickets
 
 endif # MBEDTLS_SSL_PROTO_TLS1_2
-
-config MBEDTLS_TLS_VERSION_1_3
-	bool "Support for TLS 1.3"
 
 config MBEDTLS_DEBUG_C
 	bool
@@ -345,11 +350,10 @@ config MBEDTLS_SSL_CIPHERSUITES
 	  Warning: This field has offers no validation checks.
 	  MBEDTLS_SSL_CIPHERSUITES setting in mbed TLS config file.
 
-if MBEDTLS_TLS_VERSION_1_3
-
 config MBEDTLS_SSL_PROTO_TLS1_3
-	bool
-	default y
+	bool "Support for TLS 1.3"
+
+if MBEDTLS_SSL_PROTO_TLS1_3
 
 config MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE
 	bool "TLS1.3 middlebox compatibility mode"
@@ -368,7 +372,7 @@ config MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED
 config MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
 	bool "TLS 1.3 PSK ephemeral key exchange mode"
 
-endif # MBEDTLS_TLS_VERSION_1_3
+endif # MBEDTLS_SSL_PROTO_TLS1_3
 
 menu "TLS/DTL Cipher Suites"
 

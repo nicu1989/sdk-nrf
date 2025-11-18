@@ -55,7 +55,6 @@
 
 **/shields/                               @nrfconnect/ncs-co-build-system
 
-/boards/shields/coverage_support/         @nrfconnect/ncs-co-build-system @nrfconnect/ncs-low-level-test
 /boards/shields/nrf2220ek/                @nrfconnect/ncs-co-build-system @nrfconnect/ncs-radio-sw
 /boards/shields/nrf2240ek/                @nrfconnect/ncs-co-build-system @nrfconnect/ncs-radio-sw
 /boards/shields/nrf21540ek/               @nrfconnect/ncs-co-build-system @nrfconnect/ncs-radio-sw
@@ -381,8 +380,8 @@
 /lib/hw_unique_key/                       @nrfconnect/ncs-aegir
 /lib/identity_key/                        @nrfconnect/ncs-aegir
 /lib/location/                            @nrfconnect/ncs-modem-tre
-/lib/lte_link_control/                    @nrfconnect/ncs-modem-tre @nrfconnect/ncs-modem
-/lib/modem_antenna/                       @nrfconnect/ncs-modem-tre @nrfconnect/ncs-modem
+/lib/lte_link_control/                    @nrfconnect/ncs-modem-tre
+/lib/modem_antenna/                       @nrfconnect/ncs-modem-tre
 /lib/modem_attest_token/                  @nrfconnect/ncs-modem
 /lib/modem_battery/                       @nrfconnect/ncs-modem
 /lib/modem_info/                          @nrfconnect/ncs-co-networking @nrfconnect/ncs-modem @nrfconnect/ncs-modem-tre
@@ -486,7 +485,7 @@
 /samples/cellular/modem_shell/            @nrfconnect/ncs-modem-tre
 /samples/cellular/nidd/                   @stig-bjorlykke
 /samples/cellular/nrf_cloud_*             @nrfconnect/ncs-nrf-cloud
-/samples/cellular/nrf_provisioning/       @nrfconnect/ncs-iot-oulu
+/samples/cellular/nrf_device_provisioning/ @nrfconnect/ncs-iot-oulu
 /samples/cellular/modem_trace_flash/      @nrfconnect/ncs-modem
 /samples/cellular/sms/                    @nrfconnect/ncs-modem-tre
 /samples/cellular/uicc_lwm2m/             @stig-bjorlykke
@@ -512,7 +511,7 @@
 /samples/matter/                          @nrfconnect/ncs-matter
 /samples/mcuboot/                         @nrfconnect/ncs-eris
 /samples/mpsl/                            @nrfconnect/ncs-dragoon
-/samples/net/                             @nrfconnect/ncs-cia @nrfconnect/ncs-modem
+/samples/net/                             @nrfconnect/ncs-cia
 /samples/nfc/                             @nrfconnect/ncs-si-muffin
 /samples/nrf5340/netboot/                 @nrfconnect/ncs-eris
 /samples/nrf5340/extxip_smp_svr/          @nrfconnect/ncs-eris
@@ -620,7 +619,7 @@
 /samples/cellular/lwm2m_client/*.rst      @nrfconnect/ncs-iot-oulu-tampere-doc
 /samples/cellular/modem_shell/*.rst       @nrfconnect/ncs-iot-positioning-doc
 /samples/cellular/nrf_cloud_*/**/*.rst    @nrfconnect/ncs-nrf-cloud-doc
-/samples/cellular/nrf_provisioning/*.rst  @nrfconnect/ncs-iot-oulu-tampere-doc
+/samples/cellular/nrf_device_provisioning/*.rst  @nrfconnect/ncs-iot-oulu-tampere-doc
 /samples/cellular/sms/*.rst               @nrfconnect/ncs-iot-positioning-doc
 /samples/crypto/**/*.rst                  @nrfconnect/ncs-aegir-doc
 /samples/debug/memfault/*.rst             @nrfconnect/ncs-cia-doc
@@ -739,10 +738,11 @@
 
 # Snippets
 /snippets/ci-shell/                       @nrfconnect/ncs-protocols-serialization
+/snippets/coverage_support/               @nrfconnect/ncs-low-level-test
 /snippets/hpf/                            @nrfconnect/ncs-ll-ursus
 /snippets/hw-flow-control/                @nrfconnect/ncs-low-level-test @miha-nordic
-/snippets/matter-diagnostic-logs/         @nrfconnect/ncs-matter
 /snippets/matter-debug/                   @nrfconnect/ncs-matter
+/snippets/matter-diagnostic-logs/         @nrfconnect/ncs-matter
 /snippets/nordic-bt-rpc/                  @ppryga-nordic
 /snippets/nrf70-driver-debug/             @krish2718 @sachinthegreen
 /snippets/nrf70-driver-verbose-debug/     @krish2718 @sachinthegreen
@@ -775,6 +775,7 @@
 /subsys/bluetooth/                        @nrfconnect/ncs-dragoon
 /subsys/bluetooth/adv_prov/               @nrfconnect/ncs-si-bluebagel
 /subsys/bluetooth/controller/             @nrfconnect/ncs-dragoon
+/subsys/bluetooth/cs_de/                  @nrfconnect/ncs-dragoon
 /subsys/bluetooth/host_extensions/        @nrfconnect/ncs-dragoon
 /subsys/bluetooth/mesh/                   @nrfconnect/ncs-paladin
 /subsys/bluetooth/rpc/                    @nrfconnect/ncs-si-muffin @nrfconnect/ncs-protocols-serialization
@@ -910,6 +911,7 @@
 /tests/subsys/audio/audio_module_template/ @nrfconnect/ncs-audio
 /tests/subsys/audio_module/               @nrfconnect/ncs-audio
 /tests/subsys/bluetooth/controller/        @nrfconnect/ncs-dragoon
+/tests/subsys/bluetooth/cs_de/            @nrfconnect/ncs-dragoon
 /tests/subsys/bluetooth/gatt_dm/          @nrfconnect/ncs-si-muffin
 /tests/subsys/bluetooth/enocean/          @nrfconnect/ncs-paladin
 /tests/subsys/bluetooth/fast_pair/        @nrfconnect/ncs-si-bluebagel

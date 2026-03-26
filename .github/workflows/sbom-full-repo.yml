@@ -1,0 +1,223 @@
+name: Full NCS Release SBOM
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: NCS revision, tag, or branch to initialize and scan.
+        required: false
+        default: main
+        type: string
+      shards:
+        description: Number of scan shards to create.
+        required: false
+        default: 20
+        type: number
+      max_parallel:
+        description: Maximum number of shard jobs to run at once.
+        required: false
+        default: 20
+        type: number
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/sbom-full-repo.yml
+      - scripts/west_commands/sbom/**
+      - scripts/requirements-fixed.txt
+      - scripts/requirements-west-ncs-sbom.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-repo-sbom-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+  WORKFLOW_REPO_PATH: workflow-src
+  SBOM_HELPER: workflow-src/scripts/west_commands/sbom/helpers/ci_repo_sbom.py
+  NCS_RELEASE: ${{ github.event.inputs.release || 'main' }}
+  NCS_WORKSPACE: ${{ github.event.inputs.release || 'main' }}
+  SBOM_SHARDS: ${{ github.event.inputs.shards || '20' }}
+
+jobs:
+  prepare:
+    name: Prepare SBOM matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      shard_count: ${{ steps.matrix.outputs.shard_count }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          path: ${{ env.WORKFLOW_REPO_PATH }}
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Build matrix
+        id: matrix
+        shell: bash
+        run: |
+          matrix_json="$(python "${SBOM_HELPER}" matrix --shards "${SBOM_SHARDS}")"
+          echo "matrix=${matrix_json}" >> "${GITHUB_OUTPUT}"
+          echo "shard_count=${SBOM_SHARDS}" >> "${GITHUB_OUTPUT}"
+
+  scan:
+    name: Scan shard ${{ matrix.shard_index }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(github.event.inputs.max_parallel || '20') }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          path: ${{ env.WORKFLOW_REPO_PATH }}
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            workflow-src/scripts/requirements-fixed.txt
+            workflow-src/scripts/requirements-west-ncs-sbom.txt
+
+      - name: Install west bootstrap
+        run: |
+          python -m pip install west==1.5.0
+
+      - name: Initialize release workspace
+        shell: bash
+        run: |
+          west init -m https://github.com/nrfconnect/sdk-nrf --mr "${NCS_RELEASE}" "${NCS_WORKSPACE}"
+          (
+            cd "${NCS_WORKSPACE}"
+            west update
+          )
+
+      - name: Install SBOM dependencies
+        run: |
+          python -m pip install \
+            -r "${NCS_WORKSPACE}/nrf/scripts/requirements-fixed.txt" \
+            -r "${NCS_WORKSPACE}/nrf/scripts/requirements-west-ncs-sbom.txt"
+
+      - name: Build shard input list
+        shell: bash
+        run: |
+          python "${SBOM_HELPER}" list-files \
+            --workspace "${NCS_WORKSPACE}" \
+            --shards "${SBOM_SHARDS}" \
+            --shard-index "${{ matrix.shard_index }}" \
+            --output "${NCS_WORKSPACE}/.sbom-shard-${{ matrix.shard_index }}.txt"
+
+      - name: Run SBOM for shard
+        shell: bash
+        working-directory: ${{ env.NCS_WORKSPACE }}
+        run: |
+          mkdir -p .sbom-output
+          if [[ ! -s .sbom-shard-${{ matrix.shard_index }}.txt ]]; then
+            printf '{"files":{}}\n' > .sbom-output/cache-${{ matrix.shard_index }}.json
+            exit 0
+          fi
+          west ncs-sbom \
+            --input-list-file .sbom-shard-${{ matrix.shard_index }}.txt \
+            --license-detectors spdx-tag,full-text,external-file,scancode-toolkit \
+            --output-cache-database .sbom-output/cache-${{ matrix.shard_index }}.json
+
+      - name: Upload shard cache
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
+        with:
+          name: sbom-cache-${{ matrix.shard_index }}
+          path: ${{ env.NCS_WORKSPACE }}/.sbom-output/cache-${{ matrix.shard_index }}.json
+          retention-days: 3
+          include-hidden-files: true
+
+  finalize:
+    name: Finalize full repository SBOM
+    needs:
+      - prepare
+      - scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          path: ${{ env.WORKFLOW_REPO_PATH }}
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            workflow-src/scripts/requirements-fixed.txt
+            workflow-src/scripts/requirements-west-ncs-sbom.txt
+
+      - name: Install west bootstrap
+        run: |
+          python -m pip install west==1.5.0
+
+      - name: Initialize release workspace
+        shell: bash
+        run: |
+          west init -m https://github.com/nrfconnect/sdk-nrf --mr "${NCS_RELEASE}" "${NCS_WORKSPACE}"
+          (
+            cd "${NCS_WORKSPACE}"
+            west update
+          )
+
+      - name: Install SBOM dependencies
+        run: |
+          python -m pip install \
+            -r "${NCS_WORKSPACE}/nrf/scripts/requirements-fixed.txt" \
+            -r "${NCS_WORKSPACE}/nrf/scripts/requirements-west-ncs-sbom.txt"
+
+      - name: Download shard caches
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: sbom-cache-*
+          path: ${{ env.NCS_WORKSPACE }}/.sbom-cache-shards
+          merge-multiple: true
+
+      - name: Merge cache databases
+        shell: bash
+        run: |
+          mkdir -p "${NCS_WORKSPACE}/.sbom-output"
+          python "${SBOM_HELPER}" list-files \
+            --workspace "${NCS_WORKSPACE}" \
+            --output "${NCS_WORKSPACE}/.sbom-all-files.txt"
+          python "${SBOM_HELPER}" merge-cache \
+            --output "${NCS_WORKSPACE}/.sbom-output/sbom-full-repo-cache.json" \
+            "${NCS_WORKSPACE}"/.sbom-cache-shards/*.json
+
+      - name: Generate merged SBOM reports
+        shell: bash
+        working-directory: ${{ env.NCS_WORKSPACE }}
+        run: |
+          west ncs-sbom \
+            --input-list-file .sbom-all-files.txt \
+            --input-cache-database .sbom-output/sbom-full-repo-cache.json \
+            --license-detectors cache-database,git-info \
+            --optional-license-detectors "" \
+            --output-html .sbom-output/sbom-full-repo.html \
+            --output-spdx .sbom-output/sbom-full-repo.spdx
+
+      - name: Upload final SBOM artifacts
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
+        with:
+          name: sbom-full-repo
+          path: ${{ env.NCS_WORKSPACE }}/.sbom-output
+          retention-days: 7
+          include-hidden-files: true

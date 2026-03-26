@@ -46,6 +46,27 @@ def tracked_files(root: Path) -> list[str]:
     return files
 
 
+def workspace_files(workspace: Path) -> list[str]:
+    '''Return tracked files from all west projects in a workspace.'''
+    process = subprocess.run(
+        ('west', 'list', '-f', '{path}'),
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    files = []
+    for project_path in process.stdout.splitlines():
+        project_path = project_path.strip()
+        if not project_path:
+            continue
+        project_dir = workspace / project_path
+        for rel_path in tracked_files(project_dir):
+            files.append(Path(project_path, rel_path).as_posix())
+    files.sort()
+    return files
+
+
 def shard_files(files: list[str], shards: int, shard_index: int) -> list[str]:
     '''Return one shard of the tracked file list.'''
     return files[shard_index::shards]
@@ -66,10 +87,14 @@ def matrix_command(args: argparse.Namespace) -> int:
 
 def list_files_command(args: argparse.Namespace) -> int:
     '''Write the full tracked file list or one shard list.'''
-    files = tracked_files(repository_root())
+    if args.workspace is None:
+        files = tracked_files(repository_root())
+    else:
+        files = workspace_files(Path(args.workspace).resolve())
     if args.shards is not None:
         files = shard_files(files, args.shards, args.shard_index)
     write_list_file(Path(args.output), files)
+    print(f'Wrote {len(files)} file(s) to {args.output}')
     return 0
 
 
@@ -103,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_files_parser = subparsers.add_parser('list-files', allow_abbrev=False)
     list_files_parser.add_argument('--output', required=True)
+    list_files_parser.add_argument('--workspace')
     list_files_parser.add_argument('--shards', type=int)
     list_files_parser.add_argument('--shard-index', type=int, default=0)
     list_files_parser.set_defaults(func=list_files_command)

@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: NCS release tag to initialize and scan.
+        description: NCS revision, tag, or branch to initialize and scan.
         required: false
-        default: v3.2.1
+        default: main
         type: string
       shards:
         description: Number of scan shards to create.
@@ -38,8 +38,8 @@ env:
   PYTHON_VERSION: '3.12'
   WORKFLOW_REPO_PATH: workflow-src
   SBOM_HELPER: workflow-src/scripts/west_commands/sbom/helpers/ci_repo_sbom.py
-  NCS_RELEASE: ${{ github.event.inputs.release || 'v3.2.1' }}
-  NCS_WORKSPACE: ${{ github.event.inputs.release || 'v3.2.1' }}
+  NCS_RELEASE: ${{ github.event.inputs.release || 'main' }}
+  NCS_WORKSPACE: ${{ github.event.inputs.release || 'main' }}
   SBOM_SHARDS: ${{ github.event.inputs.shards || '20' }}
 
 jobs:

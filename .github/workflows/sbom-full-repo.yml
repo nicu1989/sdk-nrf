@@ -3,6 +3,11 @@ name: Full NCS Release SBOM
 on:
   workflow_dispatch:
     inputs:
+      manifest_repo:
+        description: Manifest repository URL (sdk-nrf fork or upstream).
+        required: false
+        default: https://github.com/nicu1989/sdk-nrf
+        type: string
       release:
         description: NCS revision, tag, or branch to initialize and scan.
         required: false
@@ -11,12 +16,12 @@ on:
       shards:
         description: Number of scan shards to create.
         required: false
-        default: 20
+        default: 18
         type: number
       max_parallel:
         description: Maximum number of shard jobs to run at once.
         required: false
-        default: 20
+        default: 18
         type: number
   pull_request:
     branches:
@@ -39,8 +44,9 @@ env:
   WORKFLOW_REPO_PATH: workflow-src
   SBOM_HELPER: workflow-src/scripts/west_commands/sbom/helpers/ci_repo_sbom.py
   NCS_RELEASE: ${{ github.event.inputs.release || 'main' }}
+  NCS_MANIFEST: ${{ github.event.inputs.manifest_repo || 'https://github.com/nicu1989/sdk-nrf' }}
   NCS_WORKSPACE: ${{ github.event.inputs.release || 'main' }}
-  SBOM_SHARDS: ${{ github.event.inputs.shards || '20' }}
+  SBOM_SHARDS: ${{ github.event.inputs.shards || '18' }}
 
 jobs:
   prepare:
@@ -100,7 +106,7 @@ jobs:
       - name: Initialize release workspace
         shell: bash
         run: |
-          west init -m https://github.com/nrfconnect/sdk-nrf --mr "${NCS_RELEASE}" "${NCS_WORKSPACE}"
+          west init -m "${NCS_MANIFEST}" --mr "${NCS_RELEASE}" "${NCS_WORKSPACE}"
           (
             cd "${NCS_WORKSPACE}"
             west update
@@ -126,6 +132,8 @@ jobs:
         working-directory: ${{ env.NCS_WORKSPACE }}
         run: |
           mkdir -p .sbom-output
+          cp .sbom-shard-${{ matrix.shard_index }}.txt \
+             .sbom-output/sbom-shard-${{ matrix.shard_index }}.txt
           if [[ ! -s .sbom-shard-${{ matrix.shard_index }}.txt ]]; then
             printf '{"files":{}}\n' > .sbom-output/cache-${{ matrix.shard_index }}.json
             exit 0
@@ -139,7 +147,9 @@ jobs:
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
         with:
           name: sbom-cache-${{ matrix.shard_index }}
-          path: ${{ env.NCS_WORKSPACE }}/.sbom-output/cache-${{ matrix.shard_index }}.json
+          path: |
+            ${{ env.NCS_WORKSPACE }}/.sbom-output/cache-${{ matrix.shard_index }}.json
+            ${{ env.NCS_WORKSPACE }}/.sbom-output/sbom-shard-${{ matrix.shard_index }}.txt
           retention-days: 3
           include-hidden-files: true
 
@@ -172,7 +182,7 @@ jobs:
       - name: Initialize release workspace
         shell: bash
         run: |
-          west init -m https://github.com/nrfconnect/sdk-nrf --mr "${NCS_RELEASE}" "${NCS_WORKSPACE}"
+          west init -m "${NCS_MANIFEST}" --mr "${NCS_RELEASE}" "${NCS_WORKSPACE}"
           (
             cd "${NCS_WORKSPACE}"
             west update
@@ -201,6 +211,10 @@ jobs:
           python "${SBOM_HELPER}" merge-cache \
             --output "${NCS_WORKSPACE}/.sbom-output/sbom-full-repo-cache.json" \
             "${NCS_WORKSPACE}"/.sbom-cache-shards/*.json
+          if compgen -G "${NCS_WORKSPACE}/.sbom-cache-shards/sbom-shard-*.txt" > /dev/null; then
+            cp "${NCS_WORKSPACE}"/.sbom-cache-shards/sbom-shard-*.txt \
+               "${NCS_WORKSPACE}/.sbom-output/"
+          fi
 
       - name: Generate merged SBOM reports
         shell: bash

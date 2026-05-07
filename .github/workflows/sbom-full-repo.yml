@@ -152,12 +152,14 @@ jobs:
       - name: Export toolchain environment
         shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
           nrfutil sdk-manager toolchain env \
             --as-script --ncs-version "${TOOLCHAIN_VERSION}" > /tmp/ncs_env.sh
           # Source the script so $PATH-style references are evaluated in the
           # current shell, then propagate every var the script set/changed
-          # to GITHUB_ENV so subsequent steps inherit it.
+          # to GITHUB_ENV so subsequent steps inherit it. The script appends
+          # to vars like LD_LIBRARY_PATH that may be unset on a fresh runner,
+          # so do NOT enable `set -u` while sourcing it.
           printenv | sort > /tmp/env_before
           # shellcheck disable=SC1091
           source /tmp/ncs_env.sh

@@ -48,7 +48,6 @@ env:
   PYTHON_VERSION: '3.12'
   WORKFLOW_REPO_PATH: workflow-src
   SBOM_HELPER: workflow-src/scripts/west_commands/sbom/helpers/ci_repo_sbom.py
-  NRFUTIL_HOME: /usr/local/share/nrfutil
   NRFUTIL_URL: https://developer.nordicsemi.com/.pc-tools/nrfutil/x64-linux/nrfutil
   NCS_RELEASE: ${{ github.event.inputs.release || 'main' }}
   NCS_MANIFEST: ${{ github.event.inputs.manifest_repo || 'https://github.com/nicu1989/sdk-nrf' }}
@@ -138,11 +137,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo mkdir -p "${NRFUTIL_HOME}"
           wget -qO /tmp/nrfutil "${NRFUTIL_URL}"
           sudo install -m 0755 /tmp/nrfutil /usr/local/bin/nrfutil
-          sudo NRFUTIL_HOME="${NRFUTIL_HOME}" nrfutil install sdk-manager
-          sudo chmod -R a+rx "${NRFUTIL_HOME}"
+          # Run as the runner user so nrfutil's data dir (~/.nrfutil by default)
+          # is writable by every later step.
+          nrfutil install sdk-manager
 
       - name: Install NCS toolchain
         shell: bash
@@ -242,11 +241,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo mkdir -p "${NRFUTIL_HOME}"
           wget -qO /tmp/nrfutil "${NRFUTIL_URL}"
           sudo install -m 0755 /tmp/nrfutil /usr/local/bin/nrfutil
-          sudo NRFUTIL_HOME="${NRFUTIL_HOME}" nrfutil install sdk-manager
-          sudo chmod -R a+rx "${NRFUTIL_HOME}"
+          # Run as the runner user so nrfutil's data dir (~/.nrfutil by default)
+          # is writable by every later step.
+          nrfutil install sdk-manager
 
       - name: Install NCS toolchain
         shell: bash

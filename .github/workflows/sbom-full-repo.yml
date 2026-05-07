@@ -152,7 +152,7 @@ jobs:
       - name: Export toolchain environment
         shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
           nrfutil sdk-manager toolchain env \
             --as-script --ncs-version "${TOOLCHAIN_VERSION}" > /tmp/ncs_env.sh
           # Source the script so $PATH-style references are evaluated in the
@@ -168,7 +168,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          west init -m "${NCS_MANIFEST}" --mr "${PINNED_SHA}" "${NCS_WORKSPACE}"
+          # `west init --mr <REV>` passes <REV> to `git clone --branch`, which only
+          # accepts branch/tag names. To pin to a commit SHA we fetch the specific
+          # commit ourselves into the manifest path that west.yml's `self.path`
+          # declares (`nrf` for sdk-nrf), then run `west init -l` against it.
+          mkdir -p "${NCS_WORKSPACE}/nrf"
+          (
+            cd "${NCS_WORKSPACE}/nrf"
+            git init -q
+            git remote add origin "${NCS_MANIFEST}"
+            git fetch --depth=1 origin "${PINNED_SHA}"
+            git checkout --detach "${PINNED_SHA}"
+          )
+          west init -l "${NCS_WORKSPACE}/nrf"
           (
             cd "${NCS_WORKSPACE}"
             west update --narrow -o=--depth=1
@@ -256,10 +268,12 @@ jobs:
       - name: Export toolchain environment
         shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
           nrfutil sdk-manager toolchain env \
             --as-script --ncs-version "${TOOLCHAIN_VERSION}" > /tmp/ncs_env.sh
           printenv | sort > /tmp/env_before
+          # The script appends to vars like LD_LIBRARY_PATH that may be unset
+          # on a fresh runner, so do NOT enable `set -u` while sourcing it.
           # shellcheck disable=SC1091
           source /tmp/ncs_env.sh
           printenv | sort > /tmp/env_after
@@ -269,7 +283,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          west init -m "${NCS_MANIFEST}" --mr "${PINNED_SHA}" "${NCS_WORKSPACE}"
+          # `west init --mr <REV>` passes <REV> to `git clone --branch`, which only
+          # accepts branch/tag names. To pin to a commit SHA we fetch the specific
+          # commit ourselves into the manifest path that west.yml's `self.path`
+          # declares (`nrf` for sdk-nrf), then run `west init -l` against it.
+          mkdir -p "${NCS_WORKSPACE}/nrf"
+          (
+            cd "${NCS_WORKSPACE}/nrf"
+            git init -q
+            git remote add origin "${NCS_MANIFEST}"
+            git fetch --depth=1 origin "${PINNED_SHA}"
+            git checkout --detach "${PINNED_SHA}"
+          )
+          west init -l "${NCS_WORKSPACE}/nrf"
           (
             cd "${NCS_WORKSPACE}"
             west update --narrow -o=--depth=1

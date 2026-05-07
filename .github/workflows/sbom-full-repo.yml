@@ -152,7 +152,7 @@ jobs:
       - name: Export toolchain environment
         shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
           nrfutil sdk-manager toolchain env \
             --as-script --ncs-version "${TOOLCHAIN_VERSION}" > /tmp/ncs_env.sh
           # Source the script so $PATH-style references are evaluated in the

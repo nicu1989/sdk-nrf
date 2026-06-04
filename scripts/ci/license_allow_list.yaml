@@ -9,6 +9,23 @@
 # You can add a '-' character to the beginning of the license identifier to
 # allow specific license, but using it will generate a warning.
 
+# Files matching the special key "exclude" are not checked at all.
+# directories: paths relative to the west workspace; the directory and
+#              everything below it is excluded. Use the module "path" from
+#              west.yml to exclude an entire module repository.
+#   files:     exact file paths relative to the west workspace.
+#   patterns:  Python regular expressions (see re.search) matched against
+#              the workspace relative file path.
+exclude:
+  directories:
+  # - nrf/tests
+  # - nrfxlib/blocked_dir
+  # - modules/crypto/mbedtls
+  files:
+  # - modules/crypto/oberon-psa-crypto/a_new_file.h
+  patterns:
+  # - '^modules/crypto/oberon-psa-crypto/.*\.c$'
+
 # Nordic 5-Clause is always allowed.
 LicenseRef-Nordic-5-Clause: ".*"
 
@@ -24,6 +41,10 @@ none: |
   !\.cpp$
   !\.a$
   !\.py$
+  !\.hpp
+  !\.cxx
+  !\.hxx
+  !\.rs
 
 # Any license information is allowed in Python scripts, but it will generate a warning.
 -any: |

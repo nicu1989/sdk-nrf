@@ -4,6 +4,22 @@
 #
 # SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
 
+'''
+Check for allowed licenses in a "sdk-nrf" pull request.
+
+For the "sdk-nrf" repository it checks the files changed by the pull request. In addition, when the
+pull request modifies the west manifest (west.yml) it also checks the new files brought in by the
+modules:
+  1. Parses the manifest at the base and at the PR head.
+  2. Classifies which manifest projects were updated or added considering only projects in the
+     "nrfconnect" org (classify_project_changes).
+  3. Collects the files to check:
+       - updated project: only files added between the old and the new revision
+       - added project: all files at the new revision
+  4. Detects the licenses of all collected files with "west ncs-sbom" and checks them against the
+     allow list.
+'''
+
 import argparse
 import contextlib
 import json
@@ -17,6 +33,9 @@ from pathlib import Path
 
 import junit_xml
 import yaml
+from west.manifest import ImportFlag, Manifest
+
+NRFCONNECT_URL_PREFIX = 'https://github.com/nrfconnect/'
 
 # Messages shown in the output
 LICENSE_ALLOWED = '"*" license is allowed for this file.'
@@ -60,6 +79,8 @@ def parse_args():
                         help=f'Allow list file, default is {default_allow_list}')
     parser.add_argument('--github', action='store_true',
                         help='Add GitHub Actions Workflow commands to the stdout.')
+    parser.add_argument('-m', '--manifest', default='west.yml',
+                        help='Manifest file relative to the repository, default is west.yml',)
     return parser.parse_args()
 
 
@@ -76,17 +97,68 @@ def is_external_license_file(file_path: Path) -> bool:
     return file_str.startswith(prefix)
 
 
+def classify_project_changes(old_items: set, new_items: set) -> 'tuple[set, set, set]':
+    '''
+    Classify the difference between two sets of (name, revision) tuples.
+
+    Returns (removed, updated, added):
+      * removed: items whose name is no longer present,
+      * updated: items whose name is present in both but with a different revision,
+      * added:   items whose name is new.
+
+    This mirrors the logic of zephyrproject-rtos/action-manifest "_get_sets".
+    '''
+    # Removed items.
+    ritems = set(filter(lambda p: p[0] not in list(q[0] for q in new_items), old_items - new_items))
+    # Updated items.
+    uitems = set(filter(lambda p: p[0] in list(q[0] for q in old_items), new_items - old_items))
+    # Added items.
+    aitems = new_items - old_items - uitems
+    return (ritems, uitems, aitems)
+
+
 class FileLicenseChecker:
     '''Class that checks if a license is allowed for a file.'''
 
     allow_list: 'dict[str, list[tuple[re.Pattern, bool]]]'
+    exclude_dirs: 'list[str]'
+    exclude_files: 'set[str]'
+    exclude_patterns: 'list[re.Pattern]'
 
     def __init__(self, allow_list_file: Path):
         with open(allow_list_file) as fd:
             data = yaml.safe_load(fd)
+        self.parse_exclude(data.pop('exclude', None))
         self.allow_list = {}
         for key in data:
             self.allow_list[key.upper()] = self.parse_re(data[key])
+
+    def parse_exclude(self, exclude: 'dict|None'):
+        '''Parse the "exclude" section of the allow list file.'''
+        exclude = exclude or {}
+        unknown = set(exclude.keys()) - {'directories', 'files', 'patterns'}
+        if unknown:
+            raise ValueError('Unknown keys in the allow list "exclude" section: '
+                             + ', '.join(sorted(unknown)))
+        self.exclude_dirs = [str(d).replace('\\', '/').strip('/')
+                             for d in exclude.get('directories') or []]
+        self.exclude_files = {str(f).replace('\\', '/').lstrip('/')
+                              for f in exclude.get('files') or []}
+        self.exclude_patterns = [re.compile(p) for p in exclude.get('patterns') or []]
+
+    def is_excluded_dir(self, path: 'str|Path') -> bool:
+        '''Check if a directory relative to west workspace is entirely excluded.'''
+        path = str(path).replace('\\', '/').strip('/')
+        return any(path == d or path.startswith(d + '/') for d in self.exclude_dirs)
+
+    def is_excluded(self, file_path: 'str|Path') -> bool:
+        '''Check if a file is excluded from the check. Relative to west workspace.'''
+        file_str = str(file_path).replace('\\', '/').lstrip('/')
+        if file_str in self.exclude_files:
+            return True
+        if self.is_excluded_dir(file_str):
+            return True
+        return any(pattern.search(file_str) for pattern in self.exclude_patterns)
 
     @staticmethod
     def parse_re(re_str: str) -> 'list[tuple[re.Pattern, bool]]':
@@ -126,7 +198,7 @@ class FileLicenseChecker:
 
 
 class PatchLicenseChecker:
-    '''Check licenses for a git patch.'''
+    '''Check licenses for a git patch and for the modules updated by a west.yml change.'''
 
     args: dict
     license_checker: FileLicenseChecker
@@ -137,10 +209,17 @@ class PatchLicenseChecker:
     total_skipped: int
     total_errors: int
     total_warnings: int
+    file_project: 'dict[str, str]'
 
     def __init__(self, args: dict):
         self.args = args
         self.license_checker = FileLicenseChecker(args.allow_list)
+        self.file_project = {}
+
+    def display_name(self, file_name: str) -> str:
+        '''Prefix a file path with the west module name if it comes from a manifest module.'''
+        module = self.file_project.get(file_name.replace('\\', '/'), '')
+        return f'[{module}] {file_name}' if module else file_name
 
     def run(self, program: str, *args: 'list[str|Path]', cwd=None) -> str:
         '''A helper function to run an external program.'''
@@ -163,20 +242,31 @@ class PatchLicenseChecker:
             sys.exit(2)
         return stdout.rstrip()
 
+    def try_run(self, program: str, *args: 'list[str|Path]', cwd=None):
+        '''Run an external program without failing the whole check on a non-zero exit.'''
+        run_cmd = (program,) + tuple(str(a) for a in args)
+        return subprocess.run(run_cmd, capture_output=True, text=True, cwd=cwd)
+
     def report(self, label: str, message: str, file_name: 'str|Path' = '<none>', license: str = ''):
         '''Report results to the user.'''
         file_name = str(file_name)
+        display_name = self.display_name(file_name)
         # Print to stdout/stderr with optional GitHub Actions Workflow commands.
         if not self.args.github:
             if label in ('error', 'warning'):
-                print(f'{label.upper()}: {file_name}: {message}', file=sys.stderr)
+                print(f'{label.upper()}: {display_name}: {message}', file=sys.stderr)
             else:
-                print(f'{label.upper()}: {file_name}: {message}')
+                print(f'{label.upper()}: {display_name}: {message}')
         else:
-            print(f'{file_name}: ')
+            print(f'{display_name}: ')
             if label in ('error', 'warning'):
                 if file_name != '<none>':
-                    file_path = (self.west_workspace / file_name).relative_to(self.git_top)
+                    try:
+                        file_path = (self.west_workspace / file_name).relative_to(self.git_top)
+                    except ValueError:
+                        # A module file (outside the "sdk-nrf" repository) is already relative to
+                        # the west workspace; keep it as is.
+                        file_path = file_name
                 else:
                     file_path = file_name
                 print(f'::{label} file={file_path},title=License Problem::' +
@@ -184,7 +274,7 @@ class PatchLicenseChecker:
             else:
                 print(f'{label.upper()}: {message}')
         # Put result in JUnit file.
-        test_case = junit_xml.TestCase(file_name + (f':{license}' if license else ''),
+        test_case = junit_xml.TestCase(display_name + (f':{license}' if license else ''),
                                        'LicenseCheck')
         if label == 'error':
             test_case.add_failure_info(message)
@@ -213,16 +303,142 @@ class PatchLicenseChecker:
                  for f in files if f.strip()]
         return files
 
+    def commit_range(self) -> 'tuple[str, str]':
+        '''Split the "--commits" into the base and head revisions.'''
+        parts = self.args.commits.split('..')
+        base = parts[0]
+        head = parts[1] if len(parts) > 1 and parts[1] else 'HEAD'
+        return base, head
+
+    def load_projects(self, manifest_data: str) -> 'dict':
+        '''
+        parses one west.yml manifest and returns only the relevant projects keeping only
+        active projects hosted under the NRFCONNECT_URL_PREFIX org.
+        '''
+        manifest = Manifest.from_data(manifest_data, import_flags=ImportFlag.IGNORE)
+        projects = {}
+        for project in manifest.projects:
+            url = (project.url or '').lower().removesuffix('.git')
+            if not url.startswith(NRFCONNECT_URL_PREFIX):
+                continue
+            if not manifest.is_active(project):
+                continue
+            projects[project.name] = project
+        return projects
+
+    def ensure_revision(self, project_dir: Path, revision: str) -> bool:
+        '''Make sure a revision is available locally, fetching it if necessary.'''
+        if (
+            self.try_run(
+                'git', 'cat-file', '-e', f'{revision}^{{commit}}', cwd=project_dir
+            ).returncode
+            == 0
+        ):
+            return True
+        self.try_run('git', 'fetch', '--no-tags', 'origin', revision, cwd=project_dir)
+        return (
+            self.try_run(
+                'git', 'cat-file', '-e', f'{revision}^{{commit}}', cwd=project_dir
+            ).returncode
+            == 0
+        )
+
+    def prefix(self, project_path: str, git_output: str) -> 'list[str]':
+        '''Prefix each git output line with the project path to make it workspace relative.'''
+        return [
+            f'{project_path}/{line.strip()}' for line in git_output.splitlines() if line.strip()
+        ]
+
+    def added_files(self, project, old_rev: str, new_rev: str) -> 'list[str]':
+        '''Return the workspace relative paths of files added between old_rev and new_rev.'''
+        project_dir = self.west_workspace / project.path
+        if not (
+            self.ensure_revision(project_dir, old_rev)
+            and self.ensure_revision(project_dir, new_rev)
+        ):
+            return []
+        out = self.run(
+            'git',
+            'diff',
+            '--name-only',
+            '--diff-filter=A',
+            f'{old_rev}..{new_rev}',
+            cwd=project_dir,
+        )
+        return self.prefix(project.path, out)
+
+    def all_files(self, project, new_rev: str) -> 'list[str]':
+        '''Return the workspace relative paths of all files at new_rev (newly added project).'''
+        project_dir = self.west_workspace / project.path
+        if not self.ensure_revision(project_dir, new_rev):
+            return []
+        out = self.run('git', 'ls-tree', '-r', '--name-only', new_rev, cwd=project_dir)
+        return self.prefix(project.path, out)
+
+    def collect_manifest_files(self) -> 'list[Path]':
+        '''
+        If the manifest changed collect the new files of the updated and added
+        NRFCONNECT_URL_PREFIX projects.
+        '''
+        manifest_path = self.args.manifest
+        changed = self.run('git', 'diff', '--name-only', self.args.commits, '--', manifest_path)
+        if not changed.strip():
+            print(f'"{manifest_path}" was not modified; skipping module license checks.')
+            return []
+
+        base, head = self.commit_range()
+        old_projects = self.load_projects(self.run('git', 'show', f'{base}:{manifest_path}'))
+        new_projects = self.load_projects(self.run('git', 'show', f'{head}:{manifest_path}'))
+
+        old_set = {(p.name, p.revision) for p in old_projects.values()}
+        new_set = {(p.name, p.revision) for p in new_projects.values()}
+        (removed, updated, added) = classify_project_changes(old_set, new_set)
+        print(f'Removed projects: {sorted(n for n, _ in removed)}')
+        print(f'Updated projects: {sorted(n for n, _ in updated)}')
+        print(f'Added projects:   {sorted(n for n, _ in added)}')
+
+        if not updated and not added:
+            return []
+
+        files = []
+        for name, _ in sorted(updated):
+            project = new_projects[name]
+            if self.license_checker.is_excluded_dir(project.path):
+                print(f'Updated project "{name}": excluded by the allow list.')
+                continue
+            old_rev = old_projects[name].revision
+            new_rev = project.revision
+            print(
+                f'Updated project "{name}": collecting files added in {old_rev[:12]}..'
+                f'{new_rev[:12]}'
+            )
+            new_files = self.added_files(project, old_rev, new_rev)
+            self.file_project.update((f, name) for f in new_files)
+            files += new_files
+        for name, _ in sorted(added):
+            project = new_projects[name]
+            if self.license_checker.is_excluded_dir(project.path):
+                print(f'Added project "{name}": excluded by the allow list.')
+                continue
+            print(f'Added project "{name}": collecting the entire tree at {project.revision[:12]}')
+            new_files = self.all_files(project, project.revision)
+            self.file_project.update((f, name) for f in new_files)
+            files += new_files
+        return [Path(f) for f in files]
+
     def skip_files(self, files: 'list[Path]') -> 'list[Path]':
         '''
-        Remove files from the list, because they do not exist, or they can have any license.
-        A new list is returned.
+        Remove files from the list, because they are excluded from the check, they do not exist,
+        or they can have any license. A new list is returned.
         '''
         new_list = []
+        excluded_count = 0
         for file_name in files:
-            if not (self.west_workspace / file_name).exists():
+            if self.license_checker.is_excluded(file_name):
+                excluded_count += 1
+            elif not (self.west_workspace / file_name).exists():
                 self.report('skip', SKIP_MISSING_FILE_TEXT, file_name)
-            if not (self.west_workspace / file_name).is_file():
+            elif not (self.west_workspace / file_name).is_file():
                 self.report('skip', SKIP_DIRECTORY_TEXT, file_name)
             elif is_external_license_file(file_name):
                 self.report('skip', SKIP_EXTERNAL_LICENSE_TEXT, file_name)
@@ -230,6 +446,9 @@ class PatchLicenseChecker:
                 self.report('skip', ANY_LICENSE_ALLOWED, file_name)
             else:
                 new_list.append(file_name)
+        if excluded_count:
+            print(f'Excluded {excluded_count} file(s) matching the "exclude" section of the '
+                  'allow list.')
         return new_list
 
     def detect_licenses(self, files: 'list[Path]') -> 'list[dict]':
@@ -301,6 +520,7 @@ class PatchLicenseChecker:
         print(f'West workspace directory: {self.west_workspace}')
 
         files = self.generate_list_of_files()
+        files += self.collect_manifest_files()
         files = self.skip_files(files)
         detected = self.detect_licenses(files) if files else dict()
         success = self.show_results(detected)

@@ -13,33 +13,35 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 
+def _run(command: tuple[str, ...], cwd: Path | None = None,
+         text: bool = True) -> str | bytes:
+    '''Run a command and return its stdout, raising on a non-zero exit.'''
+    return subprocess.run(
+        command, cwd=cwd, check=True, capture_output=True, text=text,
+    ).stdout
+
+
 def repository_root() -> Path:
-    '''Return the current git repository root.'''
-    process = subprocess.run(
-        ('git', 'rev-parse', '--show-toplevel'),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return Path(process.stdout.strip()).resolve()
+    '''Return the absolute path of the current git repository root.'''
+    return Path(_run(('git', 'rev-parse', '--show-toplevel')).strip()).resolve()
 
 
 def tracked_files(root: Path) -> list[str]:
-    '''Return tracked files that exist in the checkout.'''
-    process = subprocess.run(
+    '''Return sorted, on-disk tracked files of one git repo, relative to it.'''
+    stdout = _run(
         ('git', '-c', 'core.quotepath=off', 'ls-files', '-z'),
-        cwd=root,
-        check=True,
-        capture_output=True,
+        cwd=root, text=False,
     )
     files = []
-    for raw_path in process.stdout.split(b'\0'):
+    for raw_path in stdout.split(b'\0'):
         if not raw_path:
             continue
         rel_path = raw_path.decode('utf-8', errors='surrogateescape')
+        # Skip gitlinks (submodules) and stale entries; keep only real files.
         if (root / rel_path).is_file():
             files.append(Path(rel_path).as_posix())
     files.sort()
@@ -47,46 +49,47 @@ def tracked_files(root: Path) -> list[str]:
 
 
 def workspace_files(workspace: Path) -> list[str]:
-    '''Return tracked files from all west projects in a workspace.'''
-    process = subprocess.run(
-        ('west', 'list', '-f', '{path}'),
-        cwd=workspace,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    '''Return sorted tracked files across every west project in a workspace.'''
+    stdout = _run(('west', 'list', '-f', '{path}'), cwd=workspace)
     files = []
-    for project_path in process.stdout.splitlines():
-        project_path = project_path.strip()
+    for line in stdout.splitlines():
+        project_path = line.strip()
         if not project_path:
             continue
-        project_dir = workspace / project_path
-        for rel_path in tracked_files(project_dir):
+        for rel_path in tracked_files(workspace / project_path):
             files.append(Path(project_path, rel_path).as_posix())
     files.sort()
     return files
 
 
 def shard_files(files: list[str], shards: int, shard_index: int) -> list[str]:
-    '''Return one shard of the tracked file list.'''
+    '''Return one round-robin shard of the file list.'''
     return files[shard_index::shards]
 
 
 def write_list_file(output: Path, files: list[str]) -> None:
-    '''Write one relative path per line.'''
+    '''Write one path per line.'''
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(''.join(f'{path}\n' for path in files), encoding='utf-8')
 
 
+def write_json_file(output: Path, data: dict) -> None:
+    '''Write pretty-printed, key-sorted JSON with a trailing newline.'''
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open('w', encoding='utf-8') as fd:
+        json.dump(data, fd, indent=2, sort_keys=True)
+        fd.write('\n')
+
+
 def matrix_command(args: argparse.Namespace) -> int:
-    '''Print matrix JSON for GitHub Actions.'''
-    matrix = {'include': [{'shard_index': index} for index in range(args.shards)]}
+    '''Print the GitHub Actions shard matrix as JSON on stdout.'''
+    matrix = {'include': [{'shard_index': i} for i in range(args.shards)]}
     print(json.dumps(matrix, separators=(',', ':')))
     return 0
 
 
 def list_files_command(args: argparse.Namespace) -> int:
-    '''Write the full tracked file list or one shard list.'''
+    '''Write the full file list, or a single shard of it, to a file.'''
     if args.workspace is None:
         files = tracked_files(repository_root())
     else:
@@ -94,28 +97,22 @@ def list_files_command(args: argparse.Namespace) -> int:
     if args.shards is not None:
         files = shard_files(files, args.shards, args.shard_index)
     write_list_file(Path(args.output), files)
-    print(f'Wrote {len(files)} file(s) to {args.output}')
+    print(f'Wrote {len(files)} file(s) to {args.output}', file=sys.stderr)
     return 0
 
 
 def merge_cache_command(args: argparse.Namespace) -> int:
-    '''Merge SBOM cache database files.'''
+    '''Union the `files` maps of several cache databases into one.'''
     merged = {'files': {}}
     for input_path in args.inputs:
         with open(input_path, encoding='utf-8') as fd:
-            cache = json.load(fd)
-        merged['files'].update(cache.get('files', {}))
-
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with open(output, 'w', encoding='utf-8') as fd:
-        json.dump(merged, fd, indent=2, sort_keys=True)
-        fd.write('\n')
+            merged['files'].update(json.load(fd).get('files', {}))
+    write_json_file(Path(args.output), merged)
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    '''Create the command line parser.'''
+    '''Create the command-line parser.'''
     parser = argparse.ArgumentParser(
         description='Helpers for the full-repository SBOM workflow.',
         allow_abbrev=False,
@@ -143,8 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     '''Program entry point.'''
-    parser = build_parser()
-    args = parser.parse_args()
+    args = build_parser().parse_args()
     return args.func(args)
 
 

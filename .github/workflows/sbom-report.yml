@@ -1,20 +1,20 @@
-name: Full NCS Release SBOM
+name: Generate SBOM for entire NCS
 
 on:
   workflow_dispatch:
     inputs:
       manifest_repo:
-        description: Manifest repository URL (sdk-nrf fork or upstream).
+        description: Manifest URL (sdk-nrf fork or upstream).
         required: false
-        default: https://github.com/nicu1989/sdk-nrf
+        default: https://github.com/nrfconnect/sdk-nrf
         type: string
       release:
-        description: NCS revision, tag, or branch to initialize and scan.
+        description: NCS revision, tag or branch to scan.
         required: false
         default: main
         type: string
       toolchain_version:
-        description: NCS toolchain version (e.g., v3.3.0). Used when `release` is not a vX.Y.Z tag.
+        description: NCS toolchain version. Used when `release` is not a vX.Y.Z tag.
         required: false
         default: v3.3.0
         type: string
@@ -28,41 +28,35 @@ on:
         required: false
         default: 18
         type: number
-  pull_request:
-    branches:
-      - main
-    paths:
-      - .github/workflows/sbom-full-repo.yml
-      - scripts/west_commands/sbom/**
-      - scripts/requirements-fixed.txt
-      - scripts/requirements-west-ncs-sbom.txt
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
 
 concurrency:
-  group: full-repo-sbom-${{ github.ref }}
+  group: full-ncs-sbom-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   PYTHON_VERSION: '3.12'
   WORKFLOW_REPO_PATH: workflow-src
-  SBOM_HELPER: workflow-src/scripts/west_commands/sbom/helpers/ci_repo_sbom.py
+  SBOM_HELPER: workflow-src/scripts/west_commands/sbom/helpers/ci_sbom_helpers.py
   NRFUTIL_URL: https://developer.nordicsemi.com/.pc-tools/nrfutil/x64-linux/nrfutil
-  NCS_RELEASE: ${{ github.event.inputs.release || 'main' }}
-  NCS_MANIFEST: ${{ github.event.inputs.manifest_repo || 'https://github.com/nicu1989/sdk-nrf' }}
-  NCS_WORKSPACE: ${{ github.event.inputs.release || 'main' }}
+  NCS_RELEASE: ${{ github.event.inputs.release || github.ref_name }}
+  NCS_MANIFEST: ${{ github.event.inputs.manifest_repo || format('https://github.com/{0}', github.repository) }}
+  NCS_WORKSPACE: ncs
   SBOM_SHARDS: ${{ github.event.inputs.shards || '18' }}
   TOOLCHAIN_FALLBACK: ${{ github.event.inputs.toolchain_version || 'v3.3.0' }}
 
 jobs:
   prepare:
-    name: Prepare SBOM matrix
+    name: Prepare SBOM workers matrix
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
-      shard_count: ${{ steps.matrix.outputs.shard_count }}
       pinned_sha: ${{ steps.pin.outputs.pinned_sha }}
       toolchain_version: ${{ steps.pin.outputs.toolchain_version }}
     steps:
@@ -82,17 +76,16 @@ jobs:
         run: |
           matrix_json="$(python "${SBOM_HELPER}" matrix --shards "${SBOM_SHARDS}")"
           echo "matrix=${matrix_json}" >> "${GITHUB_OUTPUT}"
-          echo "shard_count=${SBOM_SHARDS}" >> "${GITHUB_OUTPUT}"
 
-      - name: Resolve release to commit SHA and select toolchain
+      - name: Pin release to commit SHA and select toolchain
         id: pin
         shell: bash
         run: |
           set -euo pipefail
-          # Resolve manifest revision to a concrete commit SHA so every later
-          # job (scan + finalize) checks out the exact same tree. Without this,
-          # a moving branch like `main` causes scan and finalize to disagree on
-          # file contents, which breaks the cache-database SHA1 check and emits
+          # Resolve the manifest revision to a concrete commit SHA so every later
+          # job (scan + finalize) checks out the exact same tree. Without this, a
+          # moving branch like `main` makes scan and finalize disagree on file
+          # contents, breaking the cache-database SHA1 check and emitting
           # NOASSERTION for any file that changed in the gap.
           pinned_sha="$(git ls-remote --exit-code "${NCS_MANIFEST}" "${NCS_RELEASE}" \
             | head -n1 | awk '{print $1}' || true)"
@@ -122,7 +115,7 @@ jobs:
     timeout-minutes: 300
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJSON(github.event.inputs.max_parallel || '20') }}
+      max-parallel: ${{ fromJSON(github.event.inputs.max_parallel || '18') }}
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
       PINNED_SHA: ${{ needs.prepare.outputs.pinned_sha }}
@@ -133,14 +126,13 @@ jobs:
         with:
           path: ${{ env.WORKFLOW_REPO_PATH }}
 
+      # --- Toolchain + workspace setup ---
       - name: Install nrfutil and sdk-manager
         shell: bash
         run: |
           set -euo pipefail
           wget -qO /tmp/nrfutil "${NRFUTIL_URL}"
           sudo install -m 0755 /tmp/nrfutil /usr/local/bin/nrfutil
-          # Run as the runner user so nrfutil's data dir (~/.nrfutil by default)
-          # is writable by every later step.
           nrfutil install sdk-manager
 
       - name: Install NCS toolchain
@@ -155,11 +147,9 @@ jobs:
           set -eo pipefail
           nrfutil sdk-manager toolchain env \
             --as-script --ncs-version "${TOOLCHAIN_VERSION}" > /tmp/ncs_env.sh
-          # Source the script so $PATH-style references are evaluated in the
-          # current shell, then propagate every var the script set/changed
-          # to GITHUB_ENV so subsequent steps inherit it. The script appends
-          # to vars like LD_LIBRARY_PATH that may be unset on a fresh runner,
-          # so do NOT enable `set -u` while sourcing it.
+          # The script appends to vars like LD_LIBRARY_PATH that may be unset on a
+          # fresh runner, so do NOT enable `set -u` while sourcing it. Diff the
+          # environment before/after and forward only what changed to GITHUB_ENV.
           printenv | sort > /tmp/env_before
           # shellcheck disable=SC1091
           source /tmp/ncs_env.sh
@@ -171,9 +161,9 @@ jobs:
         run: |
           set -euo pipefail
           # `west init --mr <REV>` passes <REV> to `git clone --branch`, which only
-          # accepts branch/tag names. To pin to a commit SHA we fetch the specific
-          # commit ourselves into the manifest path that west.yml's `self.path`
-          # declares (`nrf` for sdk-nrf), then run `west init -l` against it.
+          # accepts branch/tag names. To pin to a commit SHA we fetch it ourselves
+          # into the manifest path west.yml declares (`nrf` for sdk-nrf), then run
+          # `west init -l` against it.
           mkdir -p "${NCS_WORKSPACE}/nrf"
           (
             cd "${NCS_WORKSPACE}/nrf"
@@ -192,13 +182,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The toolchain ships west and most NCS deps. We deliberately do NOT
-          # install requirements-fixed.txt because it pins via Nordic
-          # artifactory and older tags reference packages that are no longer
-          # there. requirements-west-ncs-sbom.txt is small and resolves from
-          # PyPI, so install only that.
+          # Deliberately skip requirements-fixed.txt: it pins via Nordic artifactory
+          # and older tags reference packages no longer hosted there.
+          # requirements-west-ncs-sbom.txt is small and resolves from PyPI.
           python -m pip install --no-cache-dir \
             -r "${NCS_WORKSPACE}/nrf/scripts/requirements-west-ncs-sbom.txt"
+      # --- end setup ---
 
       - name: Build shard input list
         shell: bash
@@ -251,14 +240,13 @@ jobs:
         with:
           path: ${{ env.WORKFLOW_REPO_PATH }}
 
+      # --- Toolchain + workspace setup ---
       - name: Install nrfutil and sdk-manager
         shell: bash
         run: |
           set -euo pipefail
           wget -qO /tmp/nrfutil "${NRFUTIL_URL}"
           sudo install -m 0755 /tmp/nrfutil /usr/local/bin/nrfutil
-          # Run as the runner user so nrfutil's data dir (~/.nrfutil by default)
-          # is writable by every later step.
           nrfutil install sdk-manager
 
       - name: Install NCS toolchain
@@ -273,9 +261,10 @@ jobs:
           set -eo pipefail
           nrfutil sdk-manager toolchain env \
             --as-script --ncs-version "${TOOLCHAIN_VERSION}" > /tmp/ncs_env.sh
+          # The script appends to vars like LD_LIBRARY_PATH that may be unset on a
+          # fresh runner, so do NOT enable `set -u` while sourcing it. Diff the
+          # environment before/after and forward only what changed to GITHUB_ENV.
           printenv | sort > /tmp/env_before
-          # The script appends to vars like LD_LIBRARY_PATH that may be unset
-          # on a fresh runner, so do NOT enable `set -u` while sourcing it.
           # shellcheck disable=SC1091
           source /tmp/ncs_env.sh
           printenv | sort > /tmp/env_after
@@ -286,9 +275,9 @@ jobs:
         run: |
           set -euo pipefail
           # `west init --mr <REV>` passes <REV> to `git clone --branch`, which only
-          # accepts branch/tag names. To pin to a commit SHA we fetch the specific
-          # commit ourselves into the manifest path that west.yml's `self.path`
-          # declares (`nrf` for sdk-nrf), then run `west init -l` against it.
+          # accepts branch/tag names. To pin to a commit SHA we fetch it ourselves
+          # into the manifest path west.yml declares (`nrf` for sdk-nrf), then run
+          # `west init -l` against it.
           mkdir -p "${NCS_WORKSPACE}/nrf"
           (
             cd "${NCS_WORKSPACE}/nrf"
@@ -307,8 +296,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Deliberately skip requirements-fixed.txt: it pins via Nordic artifactory
+          # and older tags reference packages no longer hosted there.
+          # requirements-west-ncs-sbom.txt is small and resolves from PyPI.
           python -m pip install --no-cache-dir \
             -r "${NCS_WORKSPACE}/nrf/scripts/requirements-west-ncs-sbom.txt"
+      # --- end setup ---
 
       - name: Download shard caches
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

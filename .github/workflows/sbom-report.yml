@@ -314,7 +314,6 @@ jobs:
         shell: bash
         run: |
           mkdir -p "${NCS_WORKSPACE}/.sbom-output"
-          mkdir -p "${NCS_WORKSPACE}/.sbom-output"
           python "${SBOM_HELPER}" list-files \
             --workspace "${NCS_WORKSPACE}" \
             --output "${NCS_WORKSPACE}/.sbom-all-files.txt"
@@ -330,6 +329,8 @@ jobs:
         shell: bash
         working-directory: ${{ env.NCS_WORKSPACE }}
         run: |
+          # west ncs-sbom does not create output parent directories itself.
+          mkdir -p .sbom-report
           west ncs-sbom \
             --input-list-file .sbom-all-files.txt \
             --input-cache-database .sbom-output/ncs-sbom-cache.json \
@@ -346,6 +347,28 @@ jobs:
           retention-days: 7
           include-hidden-files: true
 
+#used for branch publishing:
+#conf.py:
+## SBOM release report linkage
+##https://github.com/nrfconnect/sdk-nrf/raw/sbom/v3.4.0/sbom-full-repo.spdx
+#rst_epilog += f"""
+#.. _`NCS SBOM report (HTML)`: {gh_link_base_url}/raw/sbom/{gh_link_version}/ncs-sbom.html
+#.. _`NCS SBOM report (SPDX)`: {gh_link_base_url}/raw/sbom/{gh_link_version}/ncs-sbom.spdx
+#"""
+#
+## Expose SBOM download links only on release where the sbom-report
+## workflow has published a report for the tag. Used: `.. only:: sbom_release`.
+#if gh_link_version != "main":
+#    tags.add("sbom_release")  # noqa: F821 - provided by Sphinx at config time
+#
+#
+# release_and_maturity.rst:
+#.. only:: sbom_release
+#
+#   The Software Bill of Materials (SBOM) for this version of the |NCS| can be downloaded at the following links:
+#
+#   * `NCS SBOM report (HTML)`_
+#   * `NCS SBOM report (SPDX)`_
   publish:
     name: Publish SBOM to sbom branch
     needs:

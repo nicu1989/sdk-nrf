@@ -491,8 +491,8 @@ enum nrf_wifi_status nrf_wifi_rt_fmac_rf_test_tx_tone(struct nrf_wifi_fmac_dev_c
 						      signed char tone_freq,
 						      signed char tx_power,
 						      unsigned char tone_type,
-						      signed char dc_offset_i,
-						      signed char dc_offset_q)
+						      signed short int dc_offset_i,
+						      signed short int dc_offset_q)
 {
 	enum nrf_wifi_status status = NRF_WIFI_STATUS_FAIL;
 	struct nrf_wifi_rf_test_tx_params rf_test_tx_params;

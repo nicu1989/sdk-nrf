@@ -807,6 +807,7 @@ This section provides detailed lists of changes by :ref:`script <scripts>`.
 * Updated:
 
   * The SPDX output format from ``SPDX-2.2`` to ``SPDX-2.3``.
+  * Added ScanCode Toolkit support for macOS with Apple Silicon and Linux aarch64.
 
 Integrations
 ============

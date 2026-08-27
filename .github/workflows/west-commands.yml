@@ -75,9 +75,10 @@ jobs:
 
           # create a dummy file
           echo "/* SPDX-License-Identifier: LicenseRef-Nordic-5-Clause */" > test_file.c
-          scancode --version
+
           # run ncs-sbom with scancode-toolkit
           west ncs-sbom \
             --input-files test_file.c \
             --license-detectors scancode-toolkit \
             --output-html scancode_report.html
+          scancode --version
